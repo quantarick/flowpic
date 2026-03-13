@@ -1,3 +1,5 @@
+import { useI18n } from "../i18n";
+
 interface Props {
   canGenerate: boolean;
   loading: boolean;
@@ -5,6 +7,8 @@ interface Props {
 }
 
 export function GenerateButton({ canGenerate, loading, onClick }: Props) {
+  const { t } = useI18n();
+
   return (
     <button
       onClick={onClick}
@@ -21,7 +25,7 @@ export function GenerateButton({ canGenerate, loading, onClick }: Props) {
         transition: "background 0.2s",
       }}
     >
-      {loading ? "Starting..." : "Generate Video"}
+      {loading ? t.btnStarting : t.btnGenerate}
     </button>
   );
 }

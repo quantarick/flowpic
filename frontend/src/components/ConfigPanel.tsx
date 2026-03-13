@@ -1,3 +1,4 @@
+import { useI18n } from "../i18n";
 import type { AspectRatio, ProjectConfig, Quality } from "../types";
 
 interface Props {
@@ -6,22 +7,24 @@ interface Props {
   disabled?: boolean;
 }
 
-const ASPECT_RATIOS: { value: AspectRatio; label: string }[] = [
-  { value: "16:9", label: "16:9 (Landscape)" },
-  { value: "21:9", label: "21:9 (Ultrawide)" },
-  { value: "9:16", label: "9:16 (Portrait)" },
-  { value: "1:1", label: "1:1 (Square)" },
-  { value: "4:3", label: "4:3 (Classic)" },
-];
-
-const QUALITIES: { value: Quality; label: string }[] = [
-  { value: "720p", label: "720p (SD)" },
-  { value: "1080p", label: "1080p (HD)" },
-  { value: "2k", label: "2K (QHD)" },
-  { value: "4k", label: "4K (UHD)" },
-];
-
 export function ConfigPanel({ config, onChange, disabled }: Props) {
+  const { t } = useI18n();
+
+  const ASPECT_RATIOS: { value: AspectRatio; label: string }[] = [
+    { value: "16:9", label: t.arLandscape },
+    { value: "21:9", label: t.arUltrawide },
+    { value: "9:16", label: t.arPortrait },
+    { value: "1:1", label: t.arSquare },
+    { value: "4:3", label: t.arClassic },
+  ];
+
+  const QUALITIES: { value: Quality; label: string }[] = [
+    { value: "720p", label: t.q720 },
+    { value: "1080p", label: t.q1080 },
+    { value: "2k", label: t.q2k },
+    { value: "4k", label: t.q4k },
+  ];
+
   return (
     <div
       style={{
@@ -32,7 +35,7 @@ export function ConfigPanel({ config, onChange, disabled }: Props) {
       }}
     >
       <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
-        Aspect Ratio:
+        {t.cfgAspectRatio}
         <select
           value={config.aspect_ratio}
           onChange={(e) =>
@@ -50,7 +53,7 @@ export function ConfigPanel({ config, onChange, disabled }: Props) {
       </label>
 
       <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
-        Quality:
+        {t.cfgQuality}
         <select
           value={config.quality}
           onChange={(e) => onChange({ quality: e.target.value as Quality })}
@@ -66,7 +69,7 @@ export function ConfigPanel({ config, onChange, disabled }: Props) {
       </label>
 
       <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
-        FPS:
+        {t.cfgFps}
         <input
           type="number"
           min={15}

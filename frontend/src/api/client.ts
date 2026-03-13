@@ -3,6 +3,7 @@ import type {
   MusicUploadResponse,
   ProjectConfig,
   ProjectInfo,
+  TaskRecord,
   UploadResponse,
 } from "../types";
 
@@ -70,4 +71,16 @@ export async function generateVideo(
 
 export function getDownloadUrl(taskId: string): string {
   return `${BASE}/download/${taskId}`;
+}
+
+export async function fetchTasks(limit = 20): Promise<TaskRecord[]> {
+  return request(`/tasks?limit=${limit}`);
+}
+
+export async function cancelTask(taskId: string): Promise<void> {
+  return request(`/tasks/${taskId}/cancel`, { method: "POST" });
+}
+
+export async function retryTask(taskId: string): Promise<GenerateResponse> {
+  return request(`/tasks/${taskId}/retry`, { method: "POST" });
 }

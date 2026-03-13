@@ -2,8 +2,11 @@
 
 import base64
 import json
+import logging
 import re
 import threading
+
+logger = logging.getLogger(__name__)
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -53,18 +56,23 @@ class ImageCaptioner:
         cache_file = cache_dir / f"{image_path.stem}.json"
 
         if cache_file.exists():
-            data = json.loads(cache_file.read_text())
+            data = json.loads(cache_file.read_text(encoding="utf-8"))
             return ImageCaption(**data)
 
         # Step 1: Run CV detectors FIRST
+        logger.info(f"[{image_path.name}] Step 1: detecting faces...")
         face_regions = self._detect_faces(image_path)
+        logger.info(f"[{image_path.name}] Step 1: detecting bodies...")
         body_rects = self._detect_bodies(image_path)
+        logger.info(f"[{image_path.name}] Step 1 done: {len(face_regions)} faces, {len(body_rects)} bodies")
 
         # Step 2: Build prompt with CV hints for the LLM
         prompt = self._build_prompt(face_regions, body_rects, image_path)
 
         # Step 3: Call LLM with enriched prompt
+        logger.info(f"[{image_path.name}] Step 3: calling Ollama...")
         info = self._call_ollama(image_path, prompt)
+        logger.info(f"[{image_path.name}] Step 3 done: caption received")
 
         # Step 4: Combine signals — person if ANY detector fires
         has_person = info["has_person"] or bool(face_regions) or bool(body_rects)
@@ -80,17 +88,34 @@ class ImageCaptioner:
                 focus_x = cx / w
                 focus_y = cy / h
 
+        # Step 5: Extract GPS and reverse geocode
+        from app.services.gps_extractor import extract_gps, reverse_geocode
+        gps = extract_gps(image_path)
+        latitude = None
+        longitude = None
+        place_name = None
+        if gps:
+            latitude, longitude = gps
+            place_name = reverse_geocode(latitude, longitude)
+            logger.info(f"GPS for {image_path.name}: ({latitude:.4f}, {longitude:.4f}) → '{place_name}'")
+        else:
+            logger.info(f"No GPS data for {image_path.name}")
+
         result = ImageCaption(
             filename=image_path.name,
             caption=info["caption"],
             face_regions=face_regions,
+            has_person=has_person,
             focus_x=focus_x,
             focus_y=focus_y,
             fit_mode="full" if has_person else "crop",
+            latitude=latitude,
+            longitude=longitude,
+            place_name=place_name,
         )
 
         # Cache result
-        cache_file.write_text(result.model_dump_json())
+        cache_file.write_text(result.model_dump_json(), encoding="utf-8")
         return result
 
     def caption_images(

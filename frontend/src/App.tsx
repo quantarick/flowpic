@@ -1,13 +1,18 @@
-import { useEffect } from "react";
+import { useCallback, useEffect } from "react";
 import { ConfigPanel } from "./components/ConfigPanel";
 import { GenerateButton } from "./components/GenerateButton";
 import { ImageUploader } from "./components/ImageUploader";
+import { LangSwitch } from "./components/LangSwitch";
 import { MusicUploader } from "./components/MusicUploader";
 import { ProgressBar } from "./components/ProgressBar";
+import { TaskHistory } from "./components/TaskHistory";
 import { VideoPreview } from "./components/VideoPreview";
+import { useI18n } from "./i18n";
 import { useProject } from "./hooks/useProject";
 import { useWebSocket } from "./hooks/useWebSocket";
+
 export default function App() {
+  const { t } = useI18n();
   const project = useProject();
   const { progress, cancel } = useWebSocket(project.taskId);
 
@@ -20,6 +25,20 @@ export default function App() {
       setDone(taskId);
     }
   }, [progressStatus, taskId, setDone]);
+
+  const handleSelectTask = useCallback(
+    (taskId: string) => {
+      project.setDone(taskId);
+    },
+    [project.setDone]
+  );
+
+  const handleRetry = useCallback(
+    (newTaskId: string) => {
+      project.setTaskId(newTaskId);
+    },
+    [project.setTaskId]
+  );
 
   const isGenerating =
     project.taskId !== null &&
@@ -45,18 +64,19 @@ export default function App() {
         minHeight: "100vh",
       }}
     >
-      <header style={{ textAlign: "center", marginBottom: 40 }}>
+      <header style={{ textAlign: "center", marginBottom: 40, position: "relative" }}>
+        <LangSwitch />
         <h1 style={{ fontSize: 36, fontWeight: 700, margin: "0 0 8px" }}>
-          FlowPic
+          {t.appTitle}
         </h1>
         <p style={{ color: "#888", margin: 0 }}>
-          Music-driven photo slideshow generator
+          {t.appTagline}
         </p>
       </header>
 
       <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
         <section>
-          <h2 style={sectionTitle}>1. Upload Images</h2>
+          <h2 style={sectionTitle}>{t.sectionImages}</h2>
           <ImageUploader
             images={project.images}
             onUpload={project.uploadImages}
@@ -65,7 +85,7 @@ export default function App() {
         </section>
 
         <section>
-          <h2 style={sectionTitle}>2. Upload Music</h2>
+          <h2 style={sectionTitle}>{t.sectionMusic}</h2>
           <MusicUploader
             music={project.music}
             musicDuration={project.musicDuration}
@@ -75,7 +95,7 @@ export default function App() {
         </section>
 
         <section>
-          <h2 style={sectionTitle}>3. Configure</h2>
+          <h2 style={sectionTitle}>{t.sectionConfig}</h2>
           <ConfigPanel
             config={project.config}
             onChange={project.updateConfig}
@@ -113,10 +133,16 @@ export default function App() {
 
         {project.videoUrl && (
           <section>
-            <h2 style={sectionTitle}>Result</h2>
+            <h2 style={sectionTitle}>{t.sectionResult}</h2>
             <VideoPreview videoUrl={project.videoUrl} taskId={project.taskId} />
           </section>
         )}
+
+        <TaskHistory
+          activeTaskId={project.taskId}
+          onSelect={handleSelectTask}
+          onRetry={handleRetry}
+        />
       </div>
     </div>
   );

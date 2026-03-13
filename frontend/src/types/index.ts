@@ -48,3 +48,16 @@ export interface MusicUploadResponse {
 export interface GenerateResponse {
   task_id: string;
 }
+
+export interface TaskRecord {
+  task_id: string;
+  project_id: string;
+  status: TaskStatus;
+  created_at: string;
+  finished_at: string | null;
+  output_path: string | null;
+  image_count: number;
+  duration_seconds: number | null;
+  config: ProjectConfig | null;
+  error_message: string | null;
+}

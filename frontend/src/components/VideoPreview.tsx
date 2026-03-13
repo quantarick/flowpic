@@ -1,9 +1,13 @@
+import { useI18n } from "../i18n";
+
 interface Props {
   videoUrl: string | null;
   taskId: string | null;
 }
 
 export function VideoPreview({ videoUrl, taskId }: Props) {
+  const { t } = useI18n();
+
   if (!videoUrl) return null;
 
   return (
@@ -32,7 +36,7 @@ export function VideoPreview({ videoUrl, taskId }: Props) {
             fontWeight: 500,
           }}
         >
-          Download Video
+          {t.btnDownload}
         </a>
       </div>
     </div>

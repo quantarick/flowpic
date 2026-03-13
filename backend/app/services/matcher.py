@@ -36,6 +36,9 @@ class SemanticMatcher:
             segment_emotions = self._merge_segments(
                 segment_emotions, audio_features, target_count=n_images
             )
+        else:
+            # Even when counts match, enforce minimum clip duration
+            segment_emotions = self._enforce_min_duration(segment_emotions, audio_features)
             n_segments = len(segment_emotions)
 
         # Encode mood descriptions and captions
@@ -82,7 +85,20 @@ class SemanticMatcher:
         if len(segments) <= target_count:
             return segments
 
-        # Build energy map from audio features
+        merged = self._do_merge(segments, audio_features, target_count)
+
+        # Second pass: merge any remaining short segments (< MIN_CLIP_DURATION)
+        merged = self._enforce_min_duration(merged, audio_features)
+
+        return merged
+
+    @staticmethod
+    def _do_merge(
+        segments: list[SegmentEmotion],
+        audio_features: AudioFeatures,
+        target_count: int,
+    ) -> list[SegmentEmotion]:
+        """Core merge loop: merge adjacent low-energy pairs until target count."""
         energy_map = {
             i: audio_features.segments[i].rms_energy
             for i in range(len(audio_features.segments))
@@ -111,9 +127,49 @@ class SemanticMatcher:
                 end=b.end,
                 valence=round((a.valence + b.valence) / 2, 2),
                 arousal=round((a.arousal + b.arousal) / 2, 2),
-                mood_description=a.mood_description,  # Keep dominant mood
+                mood_description=a.mood_description,
             )
             merged[merge_idx] = merged_seg
             del merged[merge_idx + 1]
 
+        return merged
+
+    @staticmethod
+    def _enforce_min_duration(
+        segments: list[SegmentEmotion],
+        audio_features: AudioFeatures,
+        min_duration: float = 3.0,
+    ) -> list[SegmentEmotion]:
+        """Merge segments shorter than min_duration into their shortest neighbor."""
+        merged = list(segments)
+        changed = True
+        while changed:
+            changed = False
+            for i in range(len(merged)):
+                dur = merged[i].end - merged[i].start
+                if dur >= min_duration or len(merged) <= 1:
+                    continue
+                # Pick neighbor with shortest duration to merge into
+                if i == 0:
+                    merge_with = 1
+                elif i == len(merged) - 1:
+                    merge_with = i - 1
+                else:
+                    dur_prev = merged[i - 1].end - merged[i - 1].start
+                    dur_next = merged[i + 1].end - merged[i + 1].start
+                    merge_with = i - 1 if dur_prev <= dur_next else i + 1
+                # Merge: earlier segment absorbs later
+                lo, hi = min(i, merge_with), max(i, merge_with)
+                a, b = merged[lo], merged[hi]
+                merged[lo] = SegmentEmotion(
+                    segment_index=a.segment_index,
+                    start=a.start,
+                    end=b.end,
+                    valence=round((a.valence + b.valence) / 2, 2),
+                    arousal=round((a.arousal + b.arousal) / 2, 2),
+                    mood_description=a.mood_description,
+                )
+                del merged[hi]
+                changed = True
+                break
         return merged

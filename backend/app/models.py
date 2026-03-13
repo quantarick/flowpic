@@ -128,9 +128,13 @@ class ImageCaption(BaseModel):
     filename: str
     caption: str
     face_regions: list[FaceRegion] = []
+    has_person: bool = False
     focus_x: float = 0.5
     focus_y: float = 0.5
     fit_mode: str = "crop"  # "crop" or "full" (blur fill)
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    place_name: Optional[str] = None
 
 
 class MatchResult(BaseModel):
@@ -166,6 +170,26 @@ class LyricEmotion(BaseModel):
     theme: str
     mood_keywords: list[str]
     mood_description: str
+
+
+class TaskRecord(BaseModel):
+    """Persisted task record for history."""
+    task_id: str
+    project_id: str
+    status: TaskStatus = TaskStatus.PENDING
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    finished_at: Optional[datetime] = None
+    output_path: Optional[str] = None
+    image_count: int = 0
+    duration_seconds: Optional[float] = None
+    config: Optional[ProjectConfig] = None
+    error_message: Optional[str] = None
+
+
+class LocationGroup(BaseModel):
+    place_name: str
+    start_clip_index: int
+    end_clip_index: int
 
 
 class KenBurnsParams(BaseModel):

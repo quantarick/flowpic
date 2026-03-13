@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import threading
+import time
 from collections import defaultdict
 from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Any, AsyncGenerator, Callable
@@ -34,20 +35,43 @@ class TaskManager:
         )
 
         def _wrapper():
+            from app.services.task_db import update_task_status
+            # Check cancellation before starting
+            if task_id in self._cancelled:
+                update_task_status(task_id, TaskStatus.CANCELLED,
+                                   error_message="Cancelled before start")
+                self._update_progress(task_id, ProgressMessage(
+                    status=TaskStatus.CANCELLED, progress=0,
+                    current_step="Cancelled", detail="Cancelled before start",
+                ))
+                return None
+            t0 = time.time()
             try:
-                return fn(
+                result = fn(
                     progress_callback=lambda msg: self._update_progress(task_id, msg),
                     cancel_check=lambda: task_id in self._cancelled,
                     **kwargs,
                 )
+                elapsed = time.time() - t0
+                update_task_status(
+                    task_id,
+                    TaskStatus.DONE,
+                    output_path=result,
+                    duration_seconds=round(elapsed, 2),
+                )
+                return result
             except Exception as e:
+                elapsed = time.time() - t0
                 logger.exception(f"Task {task_id} failed")
+                status = TaskStatus.CANCELLED if task_id in self._cancelled else TaskStatus.FAILED
+                update_task_status(task_id, status, duration_seconds=round(elapsed, 2),
+                                   error_message=str(e)[:500])
                 self._update_progress(
                     task_id,
                     ProgressMessage(
-                        status=TaskStatus.FAILED,
+                        status=status,
                         progress=0,
-                        current_step="Failed",
+                        current_step="Failed" if status == TaskStatus.FAILED else "Cancelled",
                         detail=str(e),
                     ),
                 )
@@ -106,8 +130,20 @@ class TaskManager:
             self._loops.pop(task_id, None)
 
     def cancel(self, task_id: str):
-        """Mark a task for cancellation."""
+        """Cancel a task — works for both queued and running tasks."""
         self._cancelled.add(task_id)
+
+        # Try to cancel the Future (works if still queued, no-op if running)
+        future = self._futures.get(task_id)
+        if future and future.cancel():
+            # Successfully pulled from queue before it started
+            from app.services.task_db import update_task_status
+            update_task_status(task_id, TaskStatus.CANCELLED,
+                               error_message="Cancelled before start")
+            self._update_progress(task_id, ProgressMessage(
+                status=TaskStatus.CANCELLED, progress=0,
+                current_step="Cancelled", detail="Cancelled before start",
+            ))
 
     def get_status(self, task_id: str) -> ProgressMessage | None:
         return self._progress.get(task_id)

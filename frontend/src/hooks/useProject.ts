@@ -151,7 +151,18 @@ export function useProject() {
     setState((s) => ({
       ...s,
       status: "done",
+      taskId,
       videoUrl: api.getDownloadUrl(taskId),
+    }));
+  }, []);
+
+  const setTaskId = useCallback((taskId: string) => {
+    setState((s) => ({
+      ...s,
+      taskId,
+      status: "pending",
+      videoUrl: null,
+      error: null,
     }));
   }, []);
 
@@ -164,5 +175,6 @@ export function useProject() {
     generate,
     setStatus,
     setDone,
+    setTaskId,
   };
 }

@@ -1,6 +1,17 @@
+import io
+import logging
+import sys
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+
+# Force UTF-8 logging on Windows to handle Māori/CJK place names
+_handler = logging.StreamHandler(
+    io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+)
+_handler.setFormatter(logging.Formatter("%(levelname)s:%(name)s:%(message)s"))
+logging.basicConfig(level=logging.INFO, handlers=[_handler])
+
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings

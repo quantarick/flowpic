@@ -1,4 +1,5 @@
 import { useCallback, useRef } from "react";
+import { useI18n } from "../i18n";
 
 interface Props {
   images: string[];
@@ -7,6 +8,7 @@ interface Props {
 }
 
 export function ImageUploader({ images, onUpload, disabled }: Props) {
+  const { t } = useI18n();
   const inputRef = useRef<HTMLInputElement>(null);
 
   const handleDrop = useCallback(
@@ -57,19 +59,19 @@ export function ImageUploader({ images, onUpload, disabled }: Props) {
       {images.length === 0 ? (
         <div>
           <p style={{ fontSize: 18, margin: "0 0 8px" }}>
-            Drop images here or click to browse
+            {t.imgDropHint}
           </p>
           <p style={{ color: "#888", margin: 0 }}>
-            JPG, PNG, WebP - up to 100 images, 20MB each
+            {t.imgFormatHint}
           </p>
         </div>
       ) : (
         <div>
           <p style={{ margin: "0 0 8px" }}>
-            {images.length} image{images.length !== 1 ? "s" : ""} uploaded
+            {t.imgUploaded(images.length)}
           </p>
           <p style={{ color: "#888", margin: 0, fontSize: 14 }}>
-            Click or drop to add more
+            {t.imgAddMore}
           </p>
         </div>
       )}

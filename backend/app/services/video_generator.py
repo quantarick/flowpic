@@ -14,11 +14,16 @@ from app.models import (
     AspectRatio,
     AudioFeatures,
     ImageCaption,
+    LocationGroup,
     MatchResult,
     Quality,
     SegmentEmotion,
 )
 from app.services.smart_crop import get_output_resolution, smart_fit, remap_face_regions
+from app.services.subtitle_renderer import (
+    compute_title_font_size,
+    generate_title_card,
+)
 
 logger = logging.getLogger(__name__)
 _use_gpu = torch.cuda.is_available()
@@ -47,10 +52,32 @@ class VideoGenerator:
         audio_path: Path,
         output_path: Path,
         progress_callback=None,
+        location_groups: list[LocationGroup] | None = None,
     ):
         """Generate the final video."""
         caption_map = {ic.filename: ic for ic in image_captions}
         emotion_map = {se.segment_index: se for se in segment_emotions}
+
+        # Build title card map: first clip of each location group (including first frame)
+        # Only show when location changes (deduplicate consecutive same-name groups)
+        title_card_map: dict[int, str] = {}  # clip_index → place_name
+        prev_place: str | None = None
+        if location_groups:
+            logger.info(f"Location groups received: {len(location_groups)}")
+            for lg in location_groups:
+                logger.info(f"  Group '{lg.place_name}': clips {lg.start_clip_index}-{lg.end_clip_index}")
+                if lg.place_name != prev_place:
+                    title_card_map[lg.start_clip_index] = lg.place_name
+                    prev_place = lg.place_name
+        else:
+            logger.info("No location groups provided")
+        logger.info(f"Title card map: {title_card_map}")
+        title_font_size = compute_title_font_size(self.out_h)
+
+        # Compute global mood for font selection
+        avg_valence = sum(se.valence for se in segment_emotions) / max(len(segment_emotions), 1)
+        avg_arousal = sum(se.arousal for se in segment_emotions) / max(len(segment_emotions), 1)
+        logger.info(f"Global mood: valence={avg_valence:.1f}, arousal={avg_arousal:.1f}")
 
         xfade_dur = compute_crossfade_duration(audio_features.beat_times)
 
@@ -123,6 +150,38 @@ class VideoGenerator:
                 def make_frame(t, _img=source_img, _p=kb_params, _d=seg_duration, _kb=kb):
                     progress = max(0.0, min(1.0, t / max(_d, 0.001)))
                     return _kb.render_frame(_img, _p, progress)
+
+            # Wrap make_frame with title card + crossfade if this clip starts a large location group
+            if i in title_card_map:
+                place_name = title_card_map[i]
+                logger.info(f"Generating title card for clip {i}: '{place_name}' (seg_duration={seg_duration:.2f}s)")
+                title_img = generate_title_card(canvas, place_name, title_font_size, avg_valence, avg_arousal)
+                title_duration = min(2.0, seg_duration * 0.4)
+                fade_duration = 0.5
+                _base_make_frame = make_frame
+
+                def make_frame(
+                    t,
+                    _base=_base_make_frame,
+                    _title=title_img,
+                    _td=title_duration,
+                    _fd=fade_duration,
+                ):
+                    if t < _td - _fd:
+                        # Static title card
+                        return _title
+                    elif t < _td:
+                        # Crossfade from title to normal frame
+                        alpha = (t - (_td - _fd)) / _fd
+                        normal = _base(t)
+                        blended = (
+                            _title.astype(np.float32) * (1.0 - alpha)
+                            + normal.astype(np.float32) * alpha
+                        )
+                        return blended.astype(np.uint8)
+                    else:
+                        # Normal Ken Burns frame
+                        return _base(t)
 
             clip = VideoClip(make_frame, duration=seg_duration).with_fps(self.fps)
             clips.append(clip)

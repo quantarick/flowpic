@@ -1,3 +1,4 @@
+import { useI18n } from "../i18n";
 import type { ProgressMessage } from "../types";
 
 interface Props {
@@ -5,20 +6,23 @@ interface Props {
   onCancel?: () => void;
 }
 
-const STEP_LABELS: Record<string, string> = {
-  pending: "Queued...",
-  analyzing_audio: "Analyzing audio",
-  classifying_emotion: "Classifying emotion",
-  captioning_images: "Captioning images",
-  matching: "Matching images to music",
-  rendering: "Rendering video",
-  encoding: "Encoding video",
-  done: "Complete!",
-  failed: "Failed",
-  cancelled: "Cancelled",
-};
-
 export function ProgressBar({ progress, onCancel }: Props) {
+  const { t } = useI18n();
+
+  const STEP_LABELS: Record<string, string> = {
+    pending: t.stepPending,
+    analyzing_audio: t.stepAnalyzingAudio,
+    analyzing_lyrics: t.stepAnalyzingLyrics,
+    classifying_emotion: t.stepClassifyingEmotion,
+    captioning_images: t.stepCaptioning,
+    matching: t.stepMatching,
+    rendering: t.stepRendering,
+    encoding: t.stepEncoding,
+    done: t.stepDone,
+    failed: t.stepFailed,
+    cancelled: t.stepCancelled,
+  };
+
   if (!progress) return null;
 
   const pct = Math.round(progress.progress);
@@ -56,7 +60,7 @@ export function ProgressBar({ progress, onCancel }: Props) {
                 cursor: "pointer",
               }}
             >
-              Cancel
+              {t.btnCancel}
             </button>
           )}
         </span>

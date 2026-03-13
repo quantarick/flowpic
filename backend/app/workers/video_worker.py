@@ -8,6 +8,9 @@ from typing import Callable
 from app.config import settings
 from app.models import (
     AudioFeatures,
+    ImageCaption,
+    LocationGroup,
+    MatchResult,
     ProjectConfig,
     ProgressMessage,
     TaskStatus,
@@ -101,6 +104,11 @@ def run_pipeline(
     _progress(TaskStatus.CAPTIONING_IMAGES, 30, "Images captioned",
               f"{len(image_captions)} captions generated")
 
+    # === Step 3.5: Deduplicate similar images ===
+    image_captions = _deduplicate_images(image_captions, images_dir)
+    _progress(TaskStatus.CAPTIONING_IMAGES, 31, "Deduplicated",
+              f"{len(image_captions)} unique images after dedup")
+
     # === Step 4: Semantic Matching ===
     _progress(TaskStatus.MATCHING, 31, "Matching images to music", "Computing semantic similarity...")
     _check_cancel()
@@ -111,6 +119,21 @@ def run_pipeline(
 
     _progress(TaskStatus.MATCHING, 35, "Matching complete",
               f"{len(matches)} segment-image pairs")
+
+    # === Step 4.5: Cluster by location + Compute Location Groups ===
+    caption_map_debug = {ic.filename: ic for ic in image_captions}
+    for m in matches:
+        cap = caption_map_debug.get(m.image_filename)
+        pn = cap.place_name if cap else None
+        logger.info(f"  Pre-cluster match seg={m.segment_index} img={m.image_filename} place={pn}")
+    matches = _cluster_matches_by_location(matches, image_captions)
+    for m in matches:
+        cap = caption_map_debug.get(m.image_filename)
+        pn = cap.place_name if cap else None
+        logger.info(f"  Post-cluster match seg={m.segment_index} img={m.image_filename} place={pn}")
+    location_groups = _compute_location_groups(matches, image_captions)
+    if location_groups:
+        logger.info(f"Location groups: {len(location_groups)} distinct locations")
 
     # === Step 5: Render Video ===
     _progress(TaskStatus.RENDERING, 36, "Rendering video", "Generating Ken Burns frames...")
@@ -141,6 +164,7 @@ def run_pipeline(
         audio_path=audio_path,
         output_path=output_path,
         progress_callback=render_progress,
+        location_groups=location_groups,
     )
 
     # === Cleanup: remove uploaded images, music, and captions ===
@@ -220,7 +244,10 @@ def _run_lyrics_pipeline(
 
 
 def _cleanup_project(proj_dir: Path):
-    """Remove uploaded images, music, cached captions, and vocals after video is generated."""
+    """Remove uploaded images, music, and vocals after video is generated.
+
+    Keeps caption cache for troubleshooting (contains GPS/place_name data).
+    """
     try:
         # Remove images directory
         images_dir = proj_dir / "images"
@@ -231,10 +258,8 @@ def _cleanup_project(proj_dir: Path):
         for f in proj_dir.glob("music.*"):
             f.unlink()
 
-        # Remove caption cache
-        captions_dir = proj_dir / "captions"
-        if captions_dir.exists():
-            shutil.rmtree(captions_dir)
+        # Keep caption cache for troubleshooting
+        # captions_dir = proj_dir / "captions"
 
         # Remove separated vocals
         vocals_dir = proj_dir / "vocals"
@@ -244,6 +269,201 @@ def _cleanup_project(proj_dir: Path):
         logger.info(f"Cleaned up project files in {proj_dir}")
     except Exception as e:
         logger.warning(f"Cleanup failed for {proj_dir}: {e}")
+
+
+def _deduplicate_images(
+    image_captions: list[ImageCaption],
+    images_dir: Path,
+    hash_size: int = 16,
+    threshold: int = 6,
+) -> list[ImageCaption]:
+    """Remove near-duplicate images, keeping the sharpest from each group.
+
+    Uses difference hash (dHash) for fast perceptual similarity detection.
+    Images with hamming distance <= threshold are considered duplicates.
+    """
+    import cv2
+
+    def _dhash(img_gray, size: int = 16) -> int:
+        """Compute difference hash — a 256-bit perceptual fingerprint."""
+        resized = cv2.resize(img_gray, (size + 1, size))
+        diff = resized[:, 1:] > resized[:, :-1]
+        h = 0
+        for bit in diff.flatten():
+            h = (h << 1) | int(bit)
+        return h
+
+    def _sharpness(img_gray) -> float:
+        """Laplacian variance — higher = sharper."""
+        return cv2.Laplacian(img_gray, cv2.CV_64F).var()
+
+    def _hamming(a: int, b: int) -> int:
+        return bin(a ^ b).count("1")
+
+    # Compute hash + sharpness for each image
+    hashes: list[tuple[int, int, float]] = []  # (index, hash, sharpness)
+    for i, cap in enumerate(image_captions):
+        img_path = images_dir / cap.filename
+        img = cv2.imread(str(img_path))
+        if img is None:
+            hashes.append((i, 0, 0.0))
+            continue
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        h = _dhash(gray, hash_size)
+        s = _sharpness(gray)
+        hashes.append((i, h, s))
+
+    # Group duplicates using union-find
+    n = len(hashes)
+    parent = list(range(n))
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    for i in range(n):
+        for j in range(i + 1, n):
+            if _hamming(hashes[i][1], hashes[j][1]) <= threshold:
+                union(i, j)
+
+    # Pick the sharpest image from each group
+    groups: dict[int, list[tuple[int, float]]] = {}
+    for i, (idx, h, s) in enumerate(hashes):
+        root = find(i)
+        groups.setdefault(root, []).append((idx, s))
+
+    keep_indices: set[int] = set()
+    for root, members in groups.items():
+        best_idx = max(members, key=lambda x: x[1])[0]
+        keep_indices.add(best_idx)
+        if len(members) > 1:
+            dropped = [image_captions[idx].filename for idx, _ in members if idx != best_idx]
+            logger.info(
+                f"Dedup: keeping '{image_captions[best_idx].filename}' "
+                f"(sharpness={max(members, key=lambda x: x[1])[1]:.0f}), "
+                f"dropped {len(dropped)} duplicates: {dropped}"
+            )
+
+    result = [cap for i, cap in enumerate(image_captions) if i in keep_indices]
+    if len(result) < len(image_captions):
+        logger.info(f"Deduplication: {len(image_captions)} → {len(result)} images")
+    else:
+        logger.info("Deduplication: no duplicates found")
+    return result
+
+
+def _cluster_matches_by_location(
+    matches: list[MatchResult],
+    image_captions: list[ImageCaption],
+) -> list[MatchResult]:
+    """Reorder matches so images from the same GPS location are consecutive.
+
+    Keeps the segment timeline (segment_index order) intact but reassigns
+    which image plays at each position so same-location images are grouped.
+    """
+    caption_map = {ic.filename: ic for ic in image_captions}
+
+    # Build place_name for each match
+    def get_place(m: MatchResult) -> str | None:
+        cap = caption_map.get(m.image_filename)
+        if cap and cap.place_name and cap.latitude is not None:
+            return cap.place_name
+        return None
+
+    # Collect image filenames sorted by place_name (stable sort keeps
+    # original relative order within same place)
+    indexed = [(i, m, get_place(m)) for i, m in enumerate(matches)]
+    gps = [(i, m, p) for i, m, p in indexed if p is not None]
+    no_gps = [(i, m) for i, m, p in indexed if p is None]
+
+    if not gps:
+        return matches
+
+    # Sort GPS images by place_name
+    gps.sort(key=lambda x: x[2])
+    clustered_images = [m.image_filename for _, m, _ in gps]
+    clustered_scores = [m.similarity_score for _, m, _ in gps]
+
+    # Original segment indices in timeline order (sorted by position)
+    gps_positions = sorted([i for i, _, _ in gps])
+
+    # Original segment_index values at those positions
+    segment_indices = [matches[pos].segment_index for pos in gps_positions]
+
+    # Rebuild matches: assign clustered images to timeline positions
+    result = list(matches)
+    for slot, pos in enumerate(gps_positions):
+        result[pos] = MatchResult(
+            segment_index=segment_indices[slot],
+            image_filename=clustered_images[slot],
+            similarity_score=clustered_scores[slot],
+        )
+
+    places = [get_place(result[pos]) for pos in gps_positions]
+    logger.info(f"Clustered {len(gps)} GPS matches by location: {places}")
+    return result
+
+
+def _compute_location_groups(
+    matches: list[MatchResult],
+    image_captions: list[ImageCaption],
+    threshold_meters: float = 500.0,
+) -> list[LocationGroup]:
+    """Group consecutive clips by GPS location.
+
+    Returns a list of LocationGroup, one for each distinct location change.
+    Only images with GPS data and a resolved place_name are considered.
+    """
+    from app.services.gps_extractor import haversine_distance
+
+    caption_map = {ic.filename: ic for ic in image_captions}
+    groups: list[LocationGroup] = []
+    current_place: str | None = None
+    current_lat: float | None = None
+    current_lon: float | None = None
+    group_start: int = 0
+
+    for clip_idx, match in enumerate(matches):
+        cap = caption_map.get(match.image_filename)
+        if not cap or not cap.place_name or cap.latitude is None or cap.longitude is None:
+            continue
+
+        if current_place is None:
+            # First GPS-tagged clip
+            current_place = cap.place_name
+            current_lat = cap.latitude
+            current_lon = cap.longitude
+            group_start = clip_idx
+        else:
+            dist = haversine_distance(current_lat, current_lon, cap.latitude, cap.longitude)
+            if dist > threshold_meters or cap.place_name != current_place:
+                # Location changed — finalize previous group
+                groups.append(LocationGroup(
+                    place_name=current_place,
+                    start_clip_index=group_start,
+                    end_clip_index=clip_idx - 1,
+                ))
+                current_place = cap.place_name
+                current_lat = cap.latitude
+                current_lon = cap.longitude
+                group_start = clip_idx
+
+    # Finalize last group
+    if current_place is not None:
+        groups.append(LocationGroup(
+            place_name=current_place,
+            start_clip_index=group_start,
+            end_clip_index=len(matches) - 1,
+        ))
+
+    return groups
 
 
 def _fallback_emotions(audio_features: AudioFeatures):

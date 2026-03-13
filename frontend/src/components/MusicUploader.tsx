@@ -1,4 +1,5 @@
 import { useCallback, useRef } from "react";
+import { useI18n } from "../i18n";
 
 interface Props {
   music: string | null;
@@ -8,6 +9,7 @@ interface Props {
 }
 
 export function MusicUploader({ music, musicDuration, onUpload, disabled }: Props) {
+  const { t } = useI18n();
   const inputRef = useRef<HTMLInputElement>(null);
 
   const handleDrop = useCallback(
@@ -63,10 +65,10 @@ export function MusicUploader({ music, musicDuration, onUpload, disabled }: Prop
       {!music ? (
         <div>
           <p style={{ fontSize: 18, margin: "0 0 8px" }}>
-            Drop a music file here or click to browse
+            {t.musicDropHint}
           </p>
           <p style={{ color: "#888", margin: 0 }}>
-            MP3, WAV, FLAC, M4A - max 100MB, 10 min
+            {t.musicFormatHint}
           </p>
         </div>
       ) : (
@@ -74,11 +76,11 @@ export function MusicUploader({ music, musicDuration, onUpload, disabled }: Prop
           <p style={{ margin: "0 0 4px" }}>{music}</p>
           {musicDuration && (
             <p style={{ color: "#888", margin: 0, fontSize: 14 }}>
-              Duration: {formatDuration(musicDuration)}
+              {t.musicDuration} {formatDuration(musicDuration)}
             </p>
           )}
           <p style={{ color: "#888", margin: "4px 0 0", fontSize: 14 }}>
-            Click or drop to replace
+            {t.musicReplace}
           </p>
         </div>
       )}
