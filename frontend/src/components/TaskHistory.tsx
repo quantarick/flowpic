@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import * as api from "../api/client";
 import { useI18n } from "../i18n";
-import type { TaskRecord } from "../types";
+import type { TaskRecord, TaskStatus } from "../types";
 
 interface Props {
   activeTaskId: string | null;
@@ -9,10 +9,22 @@ interface Props {
   onRetry: (newTaskId: string) => void;
 }
 
+const PIPELINE_STAGES: TaskStatus[] = [
+  "analyzing_audio",
+  "analyzing_lyrics",
+  "classifying_emotion",
+  "captioning_images",
+  "matching",
+  "rendering",
+  "encoding",
+  "done",
+];
+
 export function TaskHistory({ activeTaskId, onSelect, onRetry }: Props) {
   const { t } = useI18n();
   const [tasks, setTasks] = useState<TaskRecord[]>([]);
   const [collapsed, setCollapsed] = useState(false);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
   const [retrying, setRetrying] = useState<string | null>(null);
   const [stopping, setStopping] = useState<string | null>(null);
 
@@ -28,6 +40,17 @@ export function TaskHistory({ activeTaskId, onSelect, onRetry }: Props) {
     done: { label: t.statusDone, color: "#2ecc71" },
     failed: { label: t.statusFailed, color: "#e74c3c" },
     cancelled: { label: t.statusCancelled, color: "#95a5a6" },
+  };
+
+  const STAGE_LABELS: Record<string, string> = {
+    analyzing_audio: t.stepAnalyzingAudio,
+    analyzing_lyrics: t.stepAnalyzingLyrics,
+    classifying_emotion: t.stepClassifyingEmotion,
+    captioning_images: t.stepCaptioning,
+    matching: t.stepMatching,
+    rendering: t.stepRendering,
+    encoding: t.stepEncoding,
+    done: t.stepDone,
   };
 
   function formatDate(iso: string): string {
@@ -47,6 +70,38 @@ export function TaskHistory({ activeTaskId, onSelect, onRetry }: Props) {
     const m = Math.floor(seconds / 60);
     const s = Math.round(seconds % 60);
     return `${m}m ${s}s`;
+  }
+
+  function getStageState(
+    taskStatus: string,
+    stage: TaskStatus
+  ): "done" | "active" | "pending" | "failed" {
+    if (taskStatus === "failed" || taskStatus === "cancelled") {
+      const taskIdx = PIPELINE_STAGES.indexOf(taskStatus as TaskStatus);
+      const stageIdx = PIPELINE_STAGES.indexOf(stage);
+      if (taskIdx === -1) {
+        // failed/cancelled aren't in PIPELINE_STAGES — find where it stopped
+        const currentIdx = PIPELINE_STAGES.indexOf(taskStatus as TaskStatus);
+        if (currentIdx === -1) {
+          // Use a separate check: stages before the failed status are done
+          // We don't know exact stage, so mark all as pending
+          return "pending";
+        }
+      }
+      return stageIdx <= taskIdx ? "done" : "pending";
+    }
+
+    const currentIdx = PIPELINE_STAGES.indexOf(taskStatus as TaskStatus);
+    const stageIdx = PIPELINE_STAGES.indexOf(stage);
+
+    if (currentIdx === -1) {
+      // pending or unknown
+      return "pending";
+    }
+
+    if (stageIdx < currentIdx) return "done";
+    if (stageIdx === currentIdx) return "active";
+    return "pending";
   }
 
   const refresh = useCallback(async () => {
@@ -107,6 +162,11 @@ export function TaskHistory({ activeTaskId, onSelect, onRetry }: Props) {
     [refresh]
   );
 
+  const toggleExpand = (taskId: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setExpandedId((prev) => (prev === taskId ? null : taskId));
+  };
+
   if (tasks.length === 0) return null;
 
   return (
@@ -145,7 +205,7 @@ export function TaskHistory({ activeTaskId, onSelect, onRetry }: Props) {
             display: "flex",
             flexDirection: "column",
             gap: 8,
-            maxHeight: 320,
+            maxHeight: 480,
             overflowY: "auto",
           }}
         >
@@ -158,127 +218,224 @@ export function TaskHistory({ activeTaskId, onSelect, onRetry }: Props) {
             const isDone = tk.status === "done";
             const canRetry = tk.status === "failed" || tk.status === "cancelled";
             const isRunning = !["done", "failed", "cancelled"].includes(tk.status);
+            const isExpanded = expandedId === tk.task_id;
 
             return (
-              <div
-                key={tk.task_id}
-                onClick={() => isDone && onSelect(tk.task_id)}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 12,
-                  padding: "10px 14px",
-                  background: isActive
-                    ? "rgba(108,92,231,0.15)"
-                    : "rgba(255,255,255,0.04)",
-                  border: isActive
-                    ? "1px solid rgba(108,92,231,0.4)"
-                    : "1px solid rgba(255,255,255,0.08)",
-                  borderRadius: 8,
-                  cursor: isDone ? "pointer" : "default",
-                  transition: "background 0.15s",
-                }}
-              >
-                <span
+              <div key={tk.task_id}>
+                <div
+                  onClick={(e) => {
+                    if (isDone) onSelect(tk.task_id);
+                    else toggleExpand(tk.task_id, e);
+                  }}
                   style={{
-                    fontSize: 12,
-                    fontWeight: 600,
-                    padding: "2px 8px",
-                    borderRadius: 4,
-                    background: info.color + "22",
-                    color: info.color,
-                    whiteSpace: "nowrap",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 12,
+                    padding: "10px 14px",
+                    background: isActive
+                      ? "rgba(108,92,231,0.15)"
+                      : "rgba(255,255,255,0.04)",
+                    border: isActive
+                      ? "1px solid rgba(108,92,231,0.4)"
+                      : "1px solid rgba(255,255,255,0.08)",
+                    borderRadius: isExpanded ? "8px 8px 0 0" : 8,
+                    cursor: "pointer",
+                    transition: "background 0.15s",
                   }}
                 >
-                  {info.label}
-                </span>
-
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div
+                  {/* Expand arrow */}
+                  <span
                     style={{
-                      fontSize: 13,
-                      color: "#ccc",
-                      overflow: "hidden",
-                      textOverflow: "ellipsis",
+                      fontSize: 10,
+                      color: "#666",
+                      transform: isExpanded ? "rotate(90deg)" : "rotate(0deg)",
+                      transition: "transform 0.2s",
+                      flexShrink: 0,
+                    }}
+                  >
+                    ▶
+                  </span>
+
+                  <span
+                    style={{
+                      fontSize: 12,
+                      fontWeight: 600,
+                      padding: "2px 8px",
+                      borderRadius: 4,
+                      background: info.color + "22",
+                      color: info.color,
                       whiteSpace: "nowrap",
                     }}
                   >
-                    {t.taskImages(tk.image_count)}
-                    {tk.config
-                      ? ` / ${tk.config.quality} / ${tk.config.aspect_ratio}`
-                      : ""}
-                  </div>
-                  {tk.error_message && (
+                    {info.label}
+                  </span>
+
+                  <div style={{ flex: 1, minWidth: 0 }}>
                     <div
                       style={{
-                        fontSize: 11,
-                        color: "#e74c3c",
-                        marginTop: 2,
+                        fontSize: 13,
+                        color: "#ccc",
                         overflow: "hidden",
                         textOverflow: "ellipsis",
                         whiteSpace: "nowrap",
                       }}
-                      title={tk.error_message}
                     >
-                      {tk.error_message}
+                      {t.taskImages(tk.image_count)}
+                      {tk.config
+                        ? ` / ${tk.config.quality} / ${tk.config.aspect_ratio}`
+                        : ""}
                     </div>
+                    {tk.error_message && (
+                      <div
+                        style={{
+                          fontSize: 11,
+                          color: "#e74c3c",
+                          marginTop: 2,
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                        }}
+                        title={tk.error_message}
+                      >
+                        {tk.error_message}
+                      </div>
+                    )}
+                  </div>
+
+                  {tk.duration_seconds != null && (
+                    <span style={{ fontSize: 12, color: "#888" }}>
+                      {formatDuration(tk.duration_seconds)}
+                    </span>
+                  )}
+
+                  <span style={{ fontSize: 12, color: "#666", whiteSpace: "nowrap" }}>
+                    {formatDate(tk.created_at)}
+                  </span>
+
+                  {isRunning && (
+                    <button
+                      onClick={(e) => handleStop(tk.task_id, e)}
+                      disabled={stopping === tk.task_id}
+                      style={{
+                        fontSize: 12,
+                        fontWeight: 600,
+                        padding: "4px 10px",
+                        borderRadius: 4,
+                        border: "1px solid #e74c3c",
+                        background: "transparent",
+                        color: "#e74c3c",
+                        cursor: stopping === tk.task_id ? "wait" : "pointer",
+                        whiteSpace: "nowrap",
+                        opacity: stopping === tk.task_id ? 0.5 : 1,
+                      }}
+                    >
+                      {stopping === tk.task_id ? "..." : t.btnStop}
+                    </button>
+                  )}
+
+                  {canRetry && (
+                    <button
+                      onClick={(e) => handleRetry(tk.task_id, e)}
+                      disabled={retrying === tk.task_id}
+                      style={{
+                        fontSize: 12,
+                        fontWeight: 600,
+                        padding: "4px 10px",
+                        borderRadius: 4,
+                        border: "1px solid #f39c12",
+                        background: "transparent",
+                        color: "#f39c12",
+                        cursor: retrying === tk.task_id ? "wait" : "pointer",
+                        whiteSpace: "nowrap",
+                        opacity: retrying === tk.task_id ? 0.5 : 1,
+                      }}
+                    >
+                      {retrying === tk.task_id
+                        ? "..."
+                        : tk.status === "cancelled"
+                          ? t.btnContinue
+                          : t.btnRetry}
+                    </button>
+                  )}
+
+                  {isDone && (
+                    <span style={{ fontSize: 16, color: "#6c5ce7" }}>▶</span>
                   )}
                 </div>
 
-                {tk.duration_seconds != null && (
-                  <span style={{ fontSize: 12, color: "#888" }}>
-                    {formatDuration(tk.duration_seconds)}
-                  </span>
-                )}
-
-                <span style={{ fontSize: 12, color: "#666", whiteSpace: "nowrap" }}>
-                  {formatDate(tk.created_at)}
-                </span>
-
-                {isRunning && (
-                  <button
-                    onClick={(e) => handleStop(tk.task_id, e)}
-                    disabled={stopping === tk.task_id}
+                {/* Expanded pipeline stages */}
+                {isExpanded && (
+                  <div
                     style={{
-                      fontSize: 12,
-                      fontWeight: 600,
-                      padding: "4px 10px",
-                      borderRadius: 4,
-                      border: "1px solid #e74c3c",
-                      background: "transparent",
-                      color: "#e74c3c",
-                      cursor: stopping === tk.task_id ? "wait" : "pointer",
-                      whiteSpace: "nowrap",
-                      opacity: stopping === tk.task_id ? 0.5 : 1,
+                      padding: "10px 14px 12px 40px",
+                      background: "rgba(255,255,255,0.02)",
+                      borderLeft: isActive
+                        ? "1px solid rgba(108,92,231,0.4)"
+                        : "1px solid rgba(255,255,255,0.08)",
+                      borderRight: isActive
+                        ? "1px solid rgba(108,92,231,0.4)"
+                        : "1px solid rgba(255,255,255,0.08)",
+                      borderBottom: isActive
+                        ? "1px solid rgba(108,92,231,0.4)"
+                        : "1px solid rgba(255,255,255,0.08)",
+                      borderRadius: "0 0 8px 8px",
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: 6,
                     }}
                   >
-                    {stopping === tk.task_id ? "..." : t.btnStop}
-                  </button>
-                )}
+                    {PIPELINE_STAGES.map((stage) => {
+                      const state = getStageState(tk.status, stage);
+                      const label = STAGE_LABELS[stage] ?? stage;
 
-                {canRetry && (
-                  <button
-                    onClick={(e) => handleRetry(tk.task_id, e)}
-                    disabled={retrying === tk.task_id}
-                    style={{
-                      fontSize: 12,
-                      fontWeight: 600,
-                      padding: "4px 10px",
-                      borderRadius: 4,
-                      border: "1px solid #f39c12",
-                      background: "transparent",
-                      color: "#f39c12",
-                      cursor: retrying === tk.task_id ? "wait" : "pointer",
-                      whiteSpace: "nowrap",
-                      opacity: retrying === tk.task_id ? 0.5 : 1,
-                    }}
-                  >
-                    {retrying === tk.task_id ? "..." : t.btnRetry}
-                  </button>
-                )}
+                      let icon: string;
+                      let color: string;
+                      if (state === "done") {
+                        icon = "\u2713"; // checkmark
+                        color = "#2ecc71";
+                      } else if (state === "active") {
+                        icon = "\u25CF"; // filled circle
+                        color = "#3498db";
+                      } else {
+                        icon = "\u25CB"; // empty circle
+                        color = "#555";
+                      }
 
-                {isDone && (
-                  <span style={{ fontSize: 16, color: "#6c5ce7" }}>▶</span>
+                      return (
+                        <div
+                          key={stage}
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 8,
+                            fontSize: 12,
+                            color,
+                          }}
+                        >
+                          <span style={{ width: 14, textAlign: "center", fontWeight: 600 }}>
+                            {icon}
+                          </span>
+                          <span>{label}</span>
+                          {state === "active" && (
+                            <span
+                              style={{
+                                fontSize: 10,
+                                color: "#3498db",
+                                animation: "pulse 1.5s ease-in-out infinite",
+                              }}
+                            >
+                              ...
+                            </span>
+                          )}
+                        </div>
+                      );
+                    })}
+                    {tk.config?.vision_model && (
+                      <div style={{ fontSize: 11, color: "#666", marginTop: 4 }}>
+                        Model: {tk.config.vision_model}
+                      </div>
+                    )}
+                  </div>
                 )}
               </div>
             );

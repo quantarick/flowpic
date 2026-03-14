@@ -4,7 +4,7 @@ import json
 import logging
 import sqlite3
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -106,7 +106,7 @@ def update_task_status(
     with _lock:
         conn = _get_conn()
         try:
-            finished = datetime.utcnow().isoformat() if status in (
+            finished = datetime.now(timezone.utc).isoformat() if status in (
                 TaskStatus.DONE, TaskStatus.FAILED, TaskStatus.CANCELLED
             ) else None
             conn.execute(

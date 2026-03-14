@@ -74,6 +74,7 @@ const zh: Translations = {
   timeHrAgo: (h: number) => `${h} 小时前`,
   btnStop: "停止",
   btnRetry: "重试",
+  btnContinue: "继续",
   retryFailed: (msg: string) => `重试失败：${msg}`,
 };
 

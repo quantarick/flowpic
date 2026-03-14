@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional
 
@@ -57,7 +57,7 @@ class ProjectInfo(BaseModel):
     images: list[str] = []
     music: Optional[str] = None
     config: ProjectConfig = Field(default_factory=ProjectConfig)
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class GenerateResponse(BaseModel):
@@ -178,7 +178,7 @@ class TaskRecord(BaseModel):
     task_id: str
     project_id: str
     status: TaskStatus = TaskStatus.PENDING
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     finished_at: Optional[datetime] = None
     output_path: Optional[str] = None
     image_count: int = 0

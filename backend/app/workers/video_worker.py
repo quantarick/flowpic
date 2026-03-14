@@ -1,5 +1,6 @@
 """Orchestration pipeline: coordinates the full video generation process."""
 
+import json
 import logging
 import shutil
 from pathlib import Path
@@ -13,10 +14,58 @@ from app.models import (
     MatchResult,
     ProjectConfig,
     ProgressMessage,
+    SegmentEmotion,
     TaskStatus,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _cache_path(proj_dir: Path, key: str) -> Path:
+    """Return path to a pipeline stage cache file."""
+    cache_dir = proj_dir / "cache"
+    cache_dir.mkdir(exist_ok=True)
+    return cache_dir / f"{key}.json"
+
+
+def _save_cache(proj_dir: Path, key: str, data) -> None:
+    """Save a list of Pydantic models to cache."""
+    path = _cache_path(proj_dir, key)
+    path.write_text(
+        json.dumps([m.model_dump() for m in data], ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+
+def _load_cache(proj_dir: Path, key: str, model_cls):
+    """Load cached list of Pydantic models. Returns None if no cache."""
+    path = _cache_path(proj_dir, key)
+    if not path.exists():
+        return None
+    try:
+        items = json.loads(path.read_text(encoding="utf-8"))
+        return [model_cls(**item) for item in items]
+    except Exception as e:
+        logger.warning(f"Cache load failed for {key}: {e}")
+        return None
+
+
+def _load_single_cache(proj_dir: Path, key: str, model_cls):
+    """Load a single cached Pydantic model. Returns None if no cache."""
+    path = _cache_path(proj_dir, key)
+    if not path.exists():
+        return None
+    try:
+        return model_cls(**json.loads(path.read_text(encoding="utf-8")))
+    except Exception as e:
+        logger.warning(f"Cache load failed for {key}: {e}")
+        return None
+
+
+def _save_single_cache(proj_dir: Path, key: str, data) -> None:
+    """Save a single Pydantic model to cache."""
+    path = _cache_path(proj_dir, key)
+    path.write_text(data.model_dump_json(), encoding="utf-8")
 
 
 def run_pipeline(
@@ -48,43 +97,57 @@ def run_pipeline(
             raise RuntimeError("Task cancelled")
 
     # === Step 1: Analyze Audio ===
-    _progress(TaskStatus.ANALYZING_AUDIO, 1, "Analyzing audio", "Extracting beats and features...")
-    _check_cancel()
+    audio_features = _load_single_cache(proj_dir, "audio_features", AudioFeatures)
+    if audio_features:
+        logger.info("Loaded audio features from cache")
+        _progress(TaskStatus.ANALYZING_AUDIO, 5, "Audio analyzed (cached)",
+                  f"Tempo: {audio_features.tempo:.0f} BPM, {len(audio_features.segments)} segments")
+    else:
+        _progress(TaskStatus.ANALYZING_AUDIO, 1, "Analyzing audio", "Extracting beats and features...")
+        _check_cancel()
 
-    from app.services.audio_analyzer import AudioAnalyzer
-    analyzer = AudioAnalyzer()
-    audio_features: AudioFeatures = analyzer.analyze(audio_path)
+        from app.services.audio_analyzer import AudioAnalyzer
+        analyzer = AudioAnalyzer()
+        audio_features = analyzer.analyze(audio_path)
+        _save_single_cache(proj_dir, "audio_features", audio_features)
 
-    _progress(TaskStatus.ANALYZING_AUDIO, 5, "Audio analyzed",
-              f"Tempo: {audio_features.tempo:.0f} BPM, {len(audio_features.segments)} segments")
+        _progress(TaskStatus.ANALYZING_AUDIO, 5, "Audio analyzed",
+                  f"Tempo: {audio_features.tempo:.0f} BPM, {len(audio_features.segments)} segments")
 
     # === Step 2: Classify Emotion ===
-    _progress(TaskStatus.CLASSIFYING_EMOTION, 6, "Classifying music emotion", "Running Music2Emo model...")
-    _check_cancel()
-
-    from app.services.emotion_classifier import EmotionClassifier
-    classifier = EmotionClassifier()
-    try:
-        segment_emotions = classifier.classify(audio_path, audio_features)
-    except Exception as e:
-        logger.warning(f"Music2Emo failed, using fallback: {e}")
-        # Fallback: generate synthetic emotions from audio features
-        segment_emotions = _fallback_emotions(audio_features)
-
-    _progress(TaskStatus.CLASSIFYING_EMOTION, 10, "Emotion classified",
-              f"Global mood: {segment_emotions[0].mood_description if segment_emotions else 'unknown'}")
-
-    # === Step 2.5: Lyrics Analysis Pipeline ===
-    if settings.lyrics_enabled:
+    segment_emotions = _load_cache(proj_dir, "segment_emotions", SegmentEmotion)
+    if segment_emotions:
+        logger.info("Loaded segment emotions from cache")
+        _progress(TaskStatus.CLASSIFYING_EMOTION, 15, "Emotion classified (cached)",
+                  f"Global mood: {segment_emotions[0].mood_description if segment_emotions else 'unknown'}")
+    else:
+        _progress(TaskStatus.CLASSIFYING_EMOTION, 6, "Classifying music emotion", "Running Music2Emo model...")
         _check_cancel()
-        lyric_emotions = _run_lyrics_pipeline(
-            audio_path, audio_features, proj_dir, _progress, _check_cancel,
-        )
-        if lyric_emotions:
-            from app.services.emotion_classifier import EmotionClassifier as EC
-            segment_emotions = EC.enrich_with_lyrics(segment_emotions, lyric_emotions)
-            _progress(TaskStatus.ANALYZING_LYRICS, 15, "Lyrics enrichment complete",
-                      f"Enriched {len(lyric_emotions)} segments with lyric themes")
+
+        from app.services.emotion_classifier import EmotionClassifier
+        classifier = EmotionClassifier()
+        try:
+            segment_emotions = classifier.classify(audio_path, audio_features)
+        except Exception as e:
+            logger.warning(f"Music2Emo failed, using fallback: {e}")
+            segment_emotions = _fallback_emotions(audio_features)
+
+        _progress(TaskStatus.CLASSIFYING_EMOTION, 10, "Emotion classified",
+                  f"Global mood: {segment_emotions[0].mood_description if segment_emotions else 'unknown'}")
+
+        # === Step 2.5: Lyrics Analysis Pipeline ===
+        if settings.lyrics_enabled:
+            _check_cancel()
+            lyric_emotions = _run_lyrics_pipeline(
+                audio_path, audio_features, proj_dir, _progress, _check_cancel,
+            )
+            if lyric_emotions:
+                from app.services.emotion_classifier import EmotionClassifier as EC
+                segment_emotions = EC.enrich_with_lyrics(segment_emotions, lyric_emotions)
+                _progress(TaskStatus.ANALYZING_LYRICS, 15, "Lyrics enrichment complete",
+                          f"Enriched {len(lyric_emotions)} segments with lyric themes")
+
+        _save_cache(proj_dir, "segment_emotions", segment_emotions)
 
     # === Step 3: Caption Images ===
     _progress(TaskStatus.CAPTIONING_IMAGES, 16, "Captioning images", f"0/{len(image_paths)} images...")
@@ -110,30 +173,40 @@ def run_pipeline(
               f"{len(image_captions)} unique images after dedup")
 
     # === Step 4: Semantic Matching ===
-    _progress(TaskStatus.MATCHING, 31, "Matching images to music", "Computing semantic similarity...")
-    _check_cancel()
+    matches = _load_cache(proj_dir, "matches", MatchResult)
+    location_groups = _load_cache(proj_dir, "location_groups", LocationGroup)
+    if matches and location_groups is not None:
+        logger.info("Loaded matches and location groups from cache")
+        _progress(TaskStatus.MATCHING, 35, "Matching complete (cached)",
+                  f"{len(matches)} segment-image pairs")
+    else:
+        _progress(TaskStatus.MATCHING, 31, "Matching images to music", "Computing semantic similarity...")
+        _check_cancel()
 
-    from app.services.matcher import SemanticMatcher
-    matcher = SemanticMatcher()
-    matches = matcher.match(segment_emotions, image_captions, audio_features)
+        from app.services.matcher import SemanticMatcher
+        matcher = SemanticMatcher()
+        matches = matcher.match(segment_emotions, image_captions, audio_features)
 
-    _progress(TaskStatus.MATCHING, 35, "Matching complete",
-              f"{len(matches)} segment-image pairs")
+        _progress(TaskStatus.MATCHING, 35, "Matching complete",
+                  f"{len(matches)} segment-image pairs")
 
-    # === Step 4.5: Cluster by location + Compute Location Groups ===
-    caption_map_debug = {ic.filename: ic for ic in image_captions}
-    for m in matches:
-        cap = caption_map_debug.get(m.image_filename)
-        pn = cap.place_name if cap else None
-        logger.info(f"  Pre-cluster match seg={m.segment_index} img={m.image_filename} place={pn}")
-    matches = _cluster_matches_by_location(matches, image_captions)
-    for m in matches:
-        cap = caption_map_debug.get(m.image_filename)
-        pn = cap.place_name if cap else None
-        logger.info(f"  Post-cluster match seg={m.segment_index} img={m.image_filename} place={pn}")
-    location_groups = _compute_location_groups(matches, image_captions)
-    if location_groups:
-        logger.info(f"Location groups: {len(location_groups)} distinct locations")
+        # === Step 4.5: Cluster by location + Compute Location Groups ===
+        caption_map_debug = {ic.filename: ic for ic in image_captions}
+        for m in matches:
+            cap = caption_map_debug.get(m.image_filename)
+            pn = cap.place_name if cap else None
+            logger.info(f"  Pre-cluster match seg={m.segment_index} img={m.image_filename} place={pn}")
+        matches = _cluster_matches_by_location(matches, image_captions)
+        for m in matches:
+            cap = caption_map_debug.get(m.image_filename)
+            pn = cap.place_name if cap else None
+            logger.info(f"  Post-cluster match seg={m.segment_index} img={m.image_filename} place={pn}")
+        location_groups = _compute_location_groups(matches, image_captions)
+        if location_groups:
+            logger.info(f"Location groups: {len(location_groups)} distinct locations")
+
+        _save_cache(proj_dir, "matches", matches)
+        _save_cache(proj_dir, "location_groups", location_groups)
 
     # === Step 5: Render Video ===
     _progress(TaskStatus.RENDERING, 36, "Rendering video", "Generating Ken Burns frames...")
@@ -258,8 +331,15 @@ def _cleanup_project(proj_dir: Path):
         for f in proj_dir.glob("music.*"):
             f.unlink()
 
-        # Keep caption cache for troubleshooting
-        # captions_dir = proj_dir / "captions"
+        # Remove pipeline cache (intermediate results)
+        cache_dir = proj_dir / "cache"
+        if cache_dir.exists():
+            shutil.rmtree(cache_dir)
+
+        # Remove caption cache
+        captions_dir = proj_dir / "captions"
+        if captions_dir.exists():
+            shutil.rmtree(captions_dir)
 
         # Remove separated vocals
         vocals_dir = proj_dir / "vocals"

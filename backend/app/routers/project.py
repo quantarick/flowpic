@@ -1,6 +1,6 @@
 import json
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
@@ -39,7 +39,7 @@ async def create_project():
     meta = {
         "project_id": project_id,
         "config": ProjectConfig().model_dump(),
-        "created_at": datetime.utcnow().isoformat(),
+        "created_at": datetime.now(timezone.utc).isoformat(),
     }
     _save_project_meta(proj_dir, meta)
 
@@ -62,7 +62,7 @@ async def get_project(project_id: str):
         images=images,
         music=music,
         config=ProjectConfig(**meta.get("config", {})),
-        created_at=meta.get("created_at", datetime.utcnow().isoformat()),
+        created_at=meta.get("created_at", datetime.now(timezone.utc).isoformat()),
     )
 
 

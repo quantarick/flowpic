@@ -72,6 +72,7 @@ const en = {
   timeHrAgo: (h: number) => `${h}h ago`,
   btnStop: "Stop",
   btnRetry: "Retry",
+  btnContinue: "Continue",
   retryFailed: (msg: string) => `Retry failed: ${msg}`,
 } as const;
 
