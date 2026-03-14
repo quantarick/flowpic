@@ -90,6 +90,10 @@ class VideoGenerator:
         clips: list[VideoClip] = []
         total = len(matches)
 
+        # Save all cropped images for troubleshooting
+        crops_dir = images_dir.parent / "output" / "crops"
+        crops_dir.mkdir(parents=True, exist_ok=True)
+
         logger.info(f"Rendering with GPU: {_use_gpu}")
 
         for i, match in enumerate(matches):
@@ -112,6 +116,13 @@ class VideoGenerator:
             focus_y = caption_info.focus_y if caption_info else 0.5
             fit_mode = caption_info.fit_mode if caption_info else "crop"
 
+            subject_box = None
+            if caption_info and caption_info.subject_x1 is not None:
+                subject_box = (
+                    caption_info.subject_x1, caption_info.subject_y1,
+                    caption_info.subject_x2, caption_info.subject_y2,
+                )
+
             fit_result = smart_fit(
                 img, self.out_w, self.out_h,
                 face_regions=face_regions,
@@ -119,8 +130,16 @@ class VideoGenerator:
                 focus_y=focus_y,
                 scale_factor=1.0,
                 fit_mode=fit_mode,
+                subject_box=subject_box,
             )
             canvas = fit_result.canvas
+
+            # Save cropped image (RGB→BGR for cv2.imwrite)
+            stem = Path(match.image_filename).stem
+            cv2.imwrite(
+                str(crops_dir / f"{i:03d}_{stem}_{fit_mode}.jpg"),
+                cv2.cvtColor(canvas, cv2.COLOR_RGB2BGR),
+            )
 
             # Remap face regions to canvas coordinates
             canvas_faces = remap_face_regions(face_regions, fit_result)

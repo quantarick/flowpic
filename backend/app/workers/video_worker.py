@@ -85,7 +85,13 @@ def run_pipeline(
     output_dir.mkdir(exist_ok=True)
     output_path = output_dir / f"{task_id_arg}.mp4"
 
+    _last_db_status = [None]  # mutable container for closure
+
     def _progress(status: TaskStatus, progress: float, step: str, detail: str = ""):
+        if status != _last_db_status[0]:
+            from app.services.task_db import update_task_status
+            update_task_status(task_id_arg, status)
+            _last_db_status[0] = status
         progress_callback(ProgressMessage(
             status=status, progress=progress,
             current_step=step, detail=detail,
@@ -208,8 +214,28 @@ def run_pipeline(
         _save_cache(proj_dir, "matches", matches)
         _save_cache(proj_dir, "location_groups", location_groups)
 
+    # === Step 4.75: Review person crops ===
+    _progress(TaskStatus.REVIEWING_CROPS, 36, "Reviewing crops", "Checking person visibility...")
+    _check_cancel()
+
+    from app.services.crop_reviewer import CropReviewer
+    reviewer = CropReviewer(model=config.vision_model)
+    person_count = sum(1 for ic in image_captions if ic.has_person)
+    if person_count > 0:
+        def review_progress(done, total):
+            pct = 36 + (done / total) * 4  # 36% to 40%
+            _progress(TaskStatus.REVIEWING_CROPS, pct, "Reviewing crops",
+                      f"{done}/{total} person images reviewed")
+            _check_cancel()
+
+        image_captions = reviewer.review_crops(
+            matches, image_captions, images_dir,
+            config.aspect_ratio, config.quality,
+            progress_callback=review_progress,
+        )
+
     # === Step 5: Render Video ===
-    _progress(TaskStatus.RENDERING, 36, "Rendering video", "Generating Ken Burns frames...")
+    _progress(TaskStatus.RENDERING, 40, "Rendering video", "Generating Ken Burns frames...")
     _check_cancel()
 
     from app.services.video_generator import VideoGenerator
@@ -220,7 +246,7 @@ def run_pipeline(
     )
 
     def render_progress(done: int, total: int):
-        pct = 36 + (done / total) * 44  # 36% to 80%
+        pct = 40 + (done / total) * 40  # 40% to 80%
         _progress(TaskStatus.RENDERING, pct, "Rendering video",
                   f"{done}/{total} segments rendered")
         _check_cancel()
@@ -317,38 +343,8 @@ def _run_lyrics_pipeline(
 
 
 def _cleanup_project(proj_dir: Path):
-    """Remove uploaded images, music, and vocals after video is generated.
-
-    Keeps caption cache for troubleshooting (contains GPS/place_name data).
-    """
-    try:
-        # Remove images directory
-        images_dir = proj_dir / "images"
-        if images_dir.exists():
-            shutil.rmtree(images_dir)
-
-        # Remove music files
-        for f in proj_dir.glob("music.*"):
-            f.unlink()
-
-        # Remove pipeline cache (intermediate results)
-        cache_dir = proj_dir / "cache"
-        if cache_dir.exists():
-            shutil.rmtree(cache_dir)
-
-        # Remove caption cache
-        captions_dir = proj_dir / "captions"
-        if captions_dir.exists():
-            shutil.rmtree(captions_dir)
-
-        # Remove separated vocals
-        vocals_dir = proj_dir / "vocals"
-        if vocals_dir.exists():
-            shutil.rmtree(vocals_dir)
-
-        logger.info(f"Cleaned up project files in {proj_dir}")
-    except Exception as e:
-        logger.warning(f"Cleanup failed for {proj_dir}: {e}")
+    """No-op: keep all intermediate data for troubleshooting."""
+    logger.info(f"Keeping all intermediate data in {proj_dir}")
 
 
 def _deduplicate_images(

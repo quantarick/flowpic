@@ -16,6 +16,7 @@ export function ProgressBar({ progress, onCancel }: Props) {
     classifying_emotion: t.stepClassifyingEmotion,
     captioning_images: t.stepCaptioning,
     matching: t.stepMatching,
+    reviewing_crops: t.stepReviewingCrops,
     rendering: t.stepRendering,
     encoding: t.stepEncoding,
     done: t.stepDone,

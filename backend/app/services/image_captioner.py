@@ -21,10 +21,13 @@ BASE_PROMPT = (
     "Analyze this image and respond in exactly this format:\n"
     "CAPTION: (2-3 sentences describing scene, mood, visual qualities)\n"
     "SUBJECT: x%, y% (center position of the main subject as percentages from top-left)\n"
+    "BOUNDS: x1%, y1%, x2%, y2% (bounding box of the main subject — "
+    "top-left and bottom-right corners as percentages)\n"
     "PERSON: YES or NO (is there any human figure — front, back, side, silhouette, any pose)\n"
     "Example response:\n"
     "CAPTION: A woman walks along the beach at sunset. The mood is serene and warm.\n"
     "SUBJECT: 40%, 50%\n"
+    "BOUNDS: 25%, 20%, 55%, 80%\n"
     "PERSON: YES"
 )
 
@@ -109,6 +112,10 @@ class ImageCaptioner:
             has_person=has_person,
             focus_x=focus_x,
             focus_y=focus_y,
+            subject_x1=info.get("subject_x1"),
+            subject_y1=info.get("subject_y1"),
+            subject_x2=info.get("subject_x2"),
+            subject_y2=info.get("subject_y2"),
             fit_mode="full" if has_person else "crop",
             latitude=latitude,
             longitude=longitude,
@@ -267,6 +274,10 @@ class ImageCaptioner:
             "focus_x": 0.5,
             "focus_y": 0.5,
             "has_person": False,
+            "subject_x1": None,
+            "subject_y1": None,
+            "subject_x2": None,
+            "subject_y2": None,
         }
 
         for line in raw.splitlines():
@@ -281,6 +292,23 @@ class ImageCaptioner:
                 if len(nums) >= 2:
                     result["focus_x"] = max(0.0, min(1.0, float(nums[0]) / 100))
                     result["focus_y"] = max(0.0, min(1.0, float(nums[1]) / 100))
+
+            elif upper.startswith("BOUNDS:"):
+                nums = re.findall(r"(\d+(?:\.\d+)?)", stripped)
+                if len(nums) >= 4:
+                    x1 = max(0.0, min(1.0, float(nums[0]) / 100))
+                    y1 = max(0.0, min(1.0, float(nums[1]) / 100))
+                    x2 = max(0.0, min(1.0, float(nums[2]) / 100))
+                    y2 = max(0.0, min(1.0, float(nums[3]) / 100))
+                    # Validate: x2>x1, y2>y1, min size >2%
+                    if x2 > x1 and y2 > y1 and (x2 - x1) > 0.02 and (y2 - y1) > 0.02:
+                        result["subject_x1"] = x1
+                        result["subject_y1"] = y1
+                        result["subject_x2"] = x2
+                        result["subject_y2"] = y2
+                        # Override focus to box center for consistency
+                        result["focus_x"] = (x1 + x2) / 2
+                        result["focus_y"] = (y1 + y2) / 2
 
             elif upper.startswith("PERSON:"):
                 result["has_person"] = "YES" in upper

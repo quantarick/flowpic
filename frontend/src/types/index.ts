@@ -7,6 +7,7 @@ export type TaskStatus =
   | "classifying_emotion"
   | "captioning_images"
   | "matching"
+  | "reviewing_crops"
   | "rendering"
   | "encoding"
   | "done"

@@ -32,6 +32,7 @@ class TaskStatus(str, Enum):
     CLASSIFYING_EMOTION = "classifying_emotion"
     CAPTIONING_IMAGES = "captioning_images"
     MATCHING = "matching"
+    REVIEWING_CROPS = "reviewing_crops"
     RENDERING = "rendering"
     ENCODING = "encoding"
     DONE = "done"
@@ -132,6 +133,10 @@ class ImageCaption(BaseModel):
     has_person: bool = False
     focus_x: float = 0.5
     focus_y: float = 0.5
+    subject_x1: Optional[float] = None  # left edge (0-1)
+    subject_y1: Optional[float] = None  # top edge (0-1)
+    subject_x2: Optional[float] = None  # right edge (0-1)
+    subject_y2: Optional[float] = None  # bottom edge (0-1)
     fit_mode: str = "crop"  # "crop" or "full" (blur fill)
     latitude: Optional[float] = None
     longitude: Optional[float] = None

@@ -15,6 +15,7 @@ const PIPELINE_STAGES: TaskStatus[] = [
   "classifying_emotion",
   "captioning_images",
   "matching",
+  "reviewing_crops",
   "rendering",
   "encoding",
   "done",
@@ -35,6 +36,7 @@ export function TaskHistory({ activeTaskId, onSelect, onRetry }: Props) {
     classifying_emotion: { label: t.statusAnalyzing, color: "#3498db" },
     captioning_images: { label: t.statusProcessing, color: "#3498db" },
     matching: { label: t.statusMatching, color: "#3498db" },
+    reviewing_crops: { label: t.statusReviewing, color: "#3498db" },
     rendering: { label: t.statusRendering, color: "#9b59b6" },
     encoding: { label: t.statusEncoding, color: "#9b59b6" },
     done: { label: t.statusDone, color: "#2ecc71" },
@@ -48,6 +50,7 @@ export function TaskHistory({ activeTaskId, onSelect, onRetry }: Props) {
     classifying_emotion: t.stepClassifyingEmotion,
     captioning_images: t.stepCaptioning,
     matching: t.stepMatching,
+    reviewing_crops: t.stepReviewingCrops,
     rendering: t.stepRendering,
     encoding: t.stepEncoding,
     done: t.stepDone,
@@ -76,23 +79,21 @@ export function TaskHistory({ activeTaskId, onSelect, onRetry }: Props) {
     taskStatus: string,
     stage: TaskStatus
   ): "done" | "active" | "pending" | "failed" {
+    const stageIdx = PIPELINE_STAGES.indexOf(stage);
+
+    if (taskStatus === "done") {
+      // All stages completed
+      return stageIdx < PIPELINE_STAGES.length - 1 ? "done" : "done";
+    }
+
     if (taskStatus === "failed" || taskStatus === "cancelled") {
-      const taskIdx = PIPELINE_STAGES.indexOf(taskStatus as TaskStatus);
-      const stageIdx = PIPELINE_STAGES.indexOf(stage);
-      if (taskIdx === -1) {
-        // failed/cancelled aren't in PIPELINE_STAGES — find where it stopped
-        const currentIdx = PIPELINE_STAGES.indexOf(taskStatus as TaskStatus);
-        if (currentIdx === -1) {
-          // Use a separate check: stages before the failed status are done
-          // We don't know exact stage, so mark all as pending
-          return "pending";
-        }
-      }
-      return stageIdx <= taskIdx ? "done" : "pending";
+      // Terminal but not success — all stages are done (task ran to completion of that stage)
+      // Since DB now tracks the last active stage, we just mark all as done
+      // (the task row itself shows the failed/cancelled badge)
+      return "done";
     }
 
     const currentIdx = PIPELINE_STAGES.indexOf(taskStatus as TaskStatus);
-    const stageIdx = PIPELINE_STAGES.indexOf(stage);
 
     if (currentIdx === -1) {
       // pending or unknown
@@ -118,7 +119,7 @@ export function TaskHistory({ activeTaskId, onSelect, onRetry }: Props) {
     const hasActive = tasks.some(
       (tk) => !["done", "failed", "cancelled"].includes(tk.status)
     );
-    const interval = setInterval(refresh, hasActive ? 5000 : 30000);
+    const interval = setInterval(refresh, hasActive ? 2000 : 30000);
     return () => clearInterval(interval);
   }, [refresh, tasks.length > 0 && tasks.some((tk) => !["done", "failed", "cancelled"].includes(tk.status))]);
 
