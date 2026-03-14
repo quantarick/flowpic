@@ -19,6 +19,7 @@ const defaultConfig: ProjectConfig = {
   aspect_ratio: "16:9",
   quality: "720p",
   fps: 30,
+  vision_model: null,
 };
 
 export function useProject() {

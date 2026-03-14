@@ -1,5 +1,7 @@
+import { useEffect, useState } from "react";
 import { useI18n } from "../i18n";
-import type { AspectRatio, ProjectConfig, Quality } from "../types";
+import { fetchOllamaModels } from "../api/client";
+import type { AspectRatio, OllamaModel, ProjectConfig, Quality } from "../types";
 
 interface Props {
   config: ProjectConfig;
@@ -9,6 +11,20 @@ interface Props {
 
 export function ConfigPanel({ config, onChange, disabled }: Props) {
   const { t } = useI18n();
+  const [models, setModels] = useState<OllamaModel[]>([]);
+  const [defaultModel, setDefaultModel] = useState<string>("moondream");
+
+  useEffect(() => {
+    fetchOllamaModels()
+      .then((res) => {
+        setModels(res.models);
+        setDefaultModel(res.default);
+      })
+      .catch(() => {
+        // Fallback: just show the default
+        setModels([{ name: "moondream", size: null, parameter_size: null }]);
+      });
+  }, []);
 
   const ASPECT_RATIOS: { value: AspectRatio; label: string }[] = [
     { value: "16:9", label: t.arLandscape },
@@ -24,6 +40,15 @@ export function ConfigPanel({ config, onChange, disabled }: Props) {
     { value: "2k", label: t.q2k },
     { value: "4k", label: t.q4k },
   ];
+
+  const formatSize = (bytes: number | null) => {
+    if (!bytes) return "";
+    const gb = bytes / 1e9;
+    if (gb >= 1) return ` (${gb.toFixed(1)}GB)`;
+    return ` (${(bytes / 1e6).toFixed(0)}MB)`;
+  };
+
+  const selectedModel = config.vision_model ?? defaultModel;
 
   return (
     <div
@@ -63,6 +88,27 @@ export function ConfigPanel({ config, onChange, disabled }: Props) {
           {QUALITIES.map((q) => (
             <option key={q.value} value={q.value}>
               {q.label}
+            </option>
+          ))}
+        </select>
+      </label>
+
+      <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        {t.cfgVisionModel}
+        <select
+          value={selectedModel}
+          onChange={(e) => {
+            const val = e.target.value;
+            onChange({ vision_model: val === defaultModel ? null : val });
+          }}
+          disabled={disabled}
+          style={selectStyle}
+        >
+          {models.map((m) => (
+            <option key={m.name} value={m.name}>
+              {m.name}
+              {m.parameter_size ? ` (${m.parameter_size})` : formatSize(m.size)}
+              {m.name === defaultModel ? " *" : ""}
             </option>
           ))}
         </select>

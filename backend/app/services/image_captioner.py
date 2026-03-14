@@ -30,9 +30,10 @@ BASE_PROMPT = (
 
 
 class ImageCaptioner:
-    def __init__(self):
+    def __init__(self, model: str | None = None):
         self._face_cascade = None
         self._hog_detector = None
+        self._model = model or settings.ollama_model
 
     def _get_face_cascade(self) -> cv2.CascadeClassifier:
         if self._face_cascade is None:
@@ -195,6 +196,9 @@ class ImageCaptioner:
 
     # --- LLM ---
 
+    # Models that only support /api/generate (not /api/chat)
+    _generate_only_models = {"moondream"}
+
     _default_info = {
         "caption": "A photograph with various visual elements.",
         "focus_x": 0.5,
@@ -203,30 +207,57 @@ class ImageCaptioner:
     }
 
     def _call_ollama(self, image_path: Path, prompt: str) -> dict:
-        """Call Ollama API to get caption + subject position + person detection."""
+        """Call Ollama API to get caption + subject position + person detection.
+
+        Uses /api/chat for most models (qwen2.5vl, gemma3, llava, etc.)
+        and /api/generate for moondream which only supports that endpoint.
+        """
         image_bytes = image_path.read_bytes()
         image_b64 = base64.b64encode(image_bytes).decode("utf-8")
 
-        payload = {
-            "model": settings.ollama_model,
-            "prompt": prompt,
-            "images": [image_b64],
-            "stream": False,
-        }
+        model_base = self._model.split(":")[0].lower()
+        use_generate = model_base in self._generate_only_models
 
         try:
             with httpx.Client(timeout=settings.ollama_timeout) as client:
-                resp = client.post(
-                    f"{settings.ollama_base_url}/api/generate",
-                    json=payload,
-                )
-                resp.raise_for_status()
-                raw = resp.json().get("response", "").strip()
+                if use_generate:
+                    raw = self._ollama_generate(client, image_b64, prompt)
+                else:
+                    raw = self._ollama_chat(client, image_b64, prompt)
                 return self._parse_response(raw)
         except httpx.TimeoutException:
             return dict(self._default_info)
         except Exception as e:
             return {**self._default_info, "caption": f"An image. (Caption unavailable: {e})"}
+
+    def _ollama_generate(self, client: httpx.Client, image_b64: str, prompt: str) -> str:
+        """Call /api/generate (moondream and similar models)."""
+        payload = {
+            "model": self._model,
+            "prompt": prompt,
+            "images": [image_b64],
+            "stream": False,
+        }
+        resp = client.post(f"{settings.ollama_base_url}/api/generate", json=payload)
+        resp.raise_for_status()
+        return resp.json().get("response", "").strip()
+
+    def _ollama_chat(self, client: httpx.Client, image_b64: str, prompt: str) -> str:
+        """Call /api/chat (qwen2.5vl, gemma3, llava, etc.)."""
+        payload = {
+            "model": self._model,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": prompt,
+                    "images": [image_b64],
+                }
+            ],
+            "stream": False,
+        }
+        resp = client.post(f"{settings.ollama_base_url}/api/chat", json=payload)
+        resp.raise_for_status()
+        return resp.json().get("message", {}).get("content", "").strip()
 
     @staticmethod
     def _parse_response(raw: str) -> dict:

@@ -22,6 +22,7 @@ const en = {
   // ConfigPanel
   cfgAspectRatio: "Aspect Ratio:",
   cfgQuality: "Quality:",
+  cfgVisionModel: "Vision Model:",
   cfgFps: "FPS:",
   arLandscape: "16:9 (Landscape)",
   arUltrawide: "21:9 (Ultrawide)",
@@ -74,5 +75,14 @@ const en = {
   retryFailed: (msg: string) => `Retry failed: ${msg}`,
 } as const;
 
-export type Translations = typeof en;
+// Widen literal types so translations can use different string values
+type Widen<T> = {
+  [K in keyof T]: T[K] extends string
+    ? string
+    : T[K] extends (...args: infer A) => string
+      ? (...args: A) => string
+      : T[K];
+};
+
+export type Translations = Widen<typeof en>;
 export default en;

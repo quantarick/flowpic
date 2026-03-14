@@ -24,6 +24,7 @@ const zh: Translations = {
   // ConfigPanel
   cfgAspectRatio: "画面比例：",
   cfgQuality: "画质：",
+  cfgVisionModel: "视觉模型：",
   cfgFps: "帧率：",
   arLandscape: "16:9（横屏）",
   arUltrawide: "21:9（超宽屏）",

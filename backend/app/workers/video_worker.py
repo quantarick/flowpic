@@ -91,7 +91,7 @@ def run_pipeline(
     _check_cancel()
 
     from app.services.image_captioner import ImageCaptioner
-    captioner = ImageCaptioner()
+    captioner = ImageCaptioner(model=config.vision_model)
 
     def caption_progress(done: int, total: int):
         pct = 16 + (done / total) * 14  # 16% to 30%

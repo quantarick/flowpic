@@ -17,6 +17,18 @@ export interface ProjectConfig {
   aspect_ratio: AspectRatio;
   quality: Quality;
   fps: number;
+  vision_model: string | null;
+}
+
+export interface OllamaModel {
+  name: string;
+  size: number | null;
+  parameter_size: string | null;
+}
+
+export interface OllamaModelsResponse {
+  default: string;
+  models: OllamaModel[];
 }
 
 export interface ProjectInfo {

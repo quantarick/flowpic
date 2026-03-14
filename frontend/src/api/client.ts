@@ -1,6 +1,7 @@
 import type {
   GenerateResponse,
   MusicUploadResponse,
+  OllamaModelsResponse,
   ProjectConfig,
   ProjectInfo,
   TaskRecord,
@@ -83,4 +84,8 @@ export async function cancelTask(taskId: string): Promise<void> {
 
 export async function retryTask(taskId: string): Promise<GenerateResponse> {
   return request(`/tasks/${taskId}/retry`, { method: "POST" });
+}
+
+export async function fetchOllamaModels(): Promise<OllamaModelsResponse> {
+  return request("/ollama/models");
 }

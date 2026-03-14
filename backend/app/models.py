@@ -45,6 +45,7 @@ class ProjectConfig(BaseModel):
     aspect_ratio: AspectRatio = AspectRatio.RATIO_16_9
     quality: Quality = Quality.SD
     fps: int = Field(default=30, ge=15, le=60)
+    vision_model: Optional[str] = None  # Ollama model override; None = use server default
 
 
 class ProjectCreateResponse(BaseModel):

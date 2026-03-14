@@ -16,7 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
 from app.dependencies import get_task_manager
-from app.routers import upload, project, generate, download
+from app.routers import upload, project, generate, download, ollama
 
 
 @asynccontextmanager
@@ -49,6 +49,7 @@ app.include_router(project.router, prefix="/api/project", tags=["project"])
 app.include_router(generate.router, prefix="/api", tags=["generate"])
 app.include_router(generate.ws_router, prefix="/ws", tags=["websocket"])
 app.include_router(download.router, prefix="/api", tags=["download"])
+app.include_router(ollama.router, prefix="/api/ollama", tags=["ollama"])
 
 
 @app.get("/api/health")
