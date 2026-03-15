@@ -12,7 +12,7 @@ class Settings(BaseSettings):
 
     # Ollama
     ollama_base_url: str = "http://localhost:11434"
-    ollama_model: str = "moondream"
+    ollama_model: str = "llava-phi3"
     ollama_timeout: int = 120
 
     # Lyrics analysis

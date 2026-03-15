@@ -20,15 +20,21 @@ from app.models import FaceRegion, ImageCaption
 BASE_PROMPT = (
     "Analyze this image and respond in exactly this format:\n"
     "CAPTION: (2-3 sentences describing scene, mood, visual qualities)\n"
+    "ELEMENT: (one word: person, animal, landscape, architecture, object, or other)\n"
     "SUBJECT: x%, y% (center position of the main subject as percentages from top-left)\n"
     "BOUNDS: x1%, y1%, x2%, y2% (bounding box of the main subject — "
     "top-left and bottom-right corners as percentages)\n"
     "PERSON: YES or NO (is there any human figure — front, back, side, silhouette, any pose)\n"
+    "PEOPLE: count, then center of each person as x%,y% (or 0 if no people)\n"
+    "HORIZON: y% (vertical position of the horizon/skyline/treeline, or NONE if indoors/no visible horizon)\n"
     "Example response:\n"
     "CAPTION: A woman walks along the beach at sunset. The mood is serene and warm.\n"
+    "ELEMENT: person\n"
     "SUBJECT: 40%, 50%\n"
     "BOUNDS: 25%, 20%, 55%, 80%\n"
-    "PERSON: YES"
+    "PERSON: YES\n"
+    "PEOPLE: 1, 40%,50%\n"
+    "HORIZON: 65%"
 )
 
 
@@ -70,6 +76,19 @@ class ImageCaptioner:
         body_rects = self._detect_bodies(image_path)
         logger.info(f"[{image_path.name}] Step 1 done: {len(face_regions)} faces, {len(body_rects)} bodies")
 
+        # Read image dimensions and filter tiny false-positive faces
+        img_for_dims = cv2.imread(str(image_path))
+        img_height, img_width = (img_for_dims.shape[:2] if img_for_dims is not None
+                                 else (0, 0))
+        if face_regions and img_width > 0:
+            min_dim = min(img_width, img_height)
+            min_face_px = int(min_dim * 0.035)
+            before = len(face_regions)
+            face_regions = [f for f in face_regions if f.w >= min_face_px]
+            if len(face_regions) < before:
+                logger.info(f"[{image_path.name}] Filtered {before - len(face_regions)} "
+                            f"tiny faces (< {min_face_px}px in {min_dim}px image)")
+
         # Step 2: Build prompt with CV hints for the LLM
         prompt = self._build_prompt(face_regions, body_rects, image_path)
 
@@ -78,19 +97,42 @@ class ImageCaptioner:
         info = self._call_ollama(image_path, prompt)
         logger.info(f"[{image_path.name}] Step 3 done: caption received")
 
-        # Step 4: Combine signals — person if ANY detector fires
-        has_person = info["has_person"] or bool(face_regions) or bool(body_rects)
+        # Step 4: Combine signals — require CV confirmation for person
+        # LLM hallucination rate is high; only trust person detection when
+        # at least one CV detector (face or body) confirms.
+        has_person = bool(face_regions) or bool(body_rects)
+
+        # If no CV detection but caption mentions humans, the LLM likely
+        # hallucinated (e.g., parroting the example response).  Replace
+        # caption and clear all LLM-derived positioning to prevent bad crops.
+        if not face_regions and not body_rects:
+            _human_words = {
+                "woman", "man", "person", "people", "child", "boy", "girl",
+                "he ", "she ", "his ", "her ", "they ", "walks", "walking",
+                "standing", "sitting", "holding",
+            }
+            caption_lower = info["caption"].lower()
+            if any(w in caption_lower for w in _human_words):
+                logger.info(f"[{image_path.name}] Caption mentions humans but no CV detection — replacing")
+                info["caption"] = "A photograph with various visual elements."
+                info["focus_x"] = 0.5
+                info["focus_y"] = 0.5
+                info["subject_x1"] = None
+                info["subject_y1"] = None
+                info["subject_x2"] = None
+                info["subject_y2"] = None
+                # People centers are from the same unreliable LLM call
+                info["people_centers"] = None
+                if info.get("element_type") == "person":
+                    info["element_type"] = None
 
         # If CV found bodies but LLM focus is default, use body center as focus
         focus_x, focus_y = info["focus_x"], info["focus_y"]
-        if body_rects and focus_x == 0.5 and focus_y == 0.5:
-            img = cv2.imread(str(image_path))
-            if img is not None:
-                h, w = img.shape[:2]
-                cx = sum(r[0] + r[2] / 2 for r in body_rects) / len(body_rects)
-                cy = sum(r[1] + r[3] / 2 for r in body_rects) / len(body_rects)
-                focus_x = cx / w
-                focus_y = cy / h
+        if body_rects and focus_x == 0.5 and focus_y == 0.5 and img_width > 0:
+            cx = sum(r[0] + r[2] / 2 for r in body_rects) / len(body_rects)
+            cy = sum(r[1] + r[3] / 2 for r in body_rects) / len(body_rects)
+            focus_x = cx / img_width
+            focus_y = cy / img_height
 
         # Step 5: Extract GPS and reverse geocode
         from app.services.gps_extractor import extract_gps, reverse_geocode
@@ -117,6 +159,11 @@ class ImageCaptioner:
             subject_x2=info.get("subject_x2"),
             subject_y2=info.get("subject_y2"),
             fit_mode="full" if has_person else "crop",
+            element_type=info.get("element_type"),
+            horizon_y=info.get("horizon_y"),
+            people_centers=info.get("people_centers"),
+            img_width=img_width if img_width > 0 else None,
+            img_height=img_height if img_height > 0 else None,
             latitude=latitude,
             longitude=longitude,
             place_name=place_name,
@@ -278,6 +325,9 @@ class ImageCaptioner:
             "subject_y1": None,
             "subject_x2": None,
             "subject_y2": None,
+            "element_type": None,
+            "horizon_y": None,
+            "people_centers": None,
         }
 
         for line in raw.splitlines():
@@ -286,6 +336,11 @@ class ImageCaptioner:
 
             if upper.startswith("CAPTION:"):
                 result["caption"] = stripped[len("CAPTION:"):].strip()
+
+            elif upper.startswith("ELEMENT:"):
+                val = stripped[len("ELEMENT:"):].strip().lower()
+                if val in ("person", "animal", "landscape", "architecture", "object", "other"):
+                    result["element_type"] = val
 
             elif upper.startswith("SUBJECT:"):
                 nums = re.findall(r"(\d+(?:\.\d+)?)", stripped)
@@ -312,6 +367,25 @@ class ImageCaptioner:
 
             elif upper.startswith("PERSON:"):
                 result["has_person"] = "YES" in upper
+
+            elif upper.startswith("PEOPLE:"):
+                nums = re.findall(r"(\d+(?:\.\d+)?)", stripped)
+                if nums:
+                    count = int(nums[0])
+                    if count > 0 and len(nums) >= 1 + count * 2:
+                        centers = []
+                        for i in range(count):
+                            px = max(0.0, min(1.0, float(nums[1 + i * 2]) / 100))
+                            py = max(0.0, min(1.0, float(nums[2 + i * 2]) / 100))
+                            centers.append([px, py])
+                        result["people_centers"] = centers
+
+            elif upper.startswith("HORIZON:"):
+                if "NONE" not in upper:
+                    nums = re.findall(r"(\d+(?:\.\d+)?)", stripped)
+                    if nums:
+                        hy = max(0.0, min(1.0, float(nums[0]) / 100))
+                        result["horizon_y"] = hy
 
         return result
 

@@ -138,6 +138,11 @@ class ImageCaption(BaseModel):
     subject_x2: Optional[float] = None  # right edge (0-1)
     subject_y2: Optional[float] = None  # bottom edge (0-1)
     fit_mode: str = "crop"  # "crop" or "full" (blur fill)
+    element_type: Optional[str] = None  # person/animal/landscape/architecture/object
+    horizon_y: Optional[float] = None  # 0-1 normalized horizon position
+    people_centers: Optional[list[list[float]]] = None  # [[x1,y1], [x2,y2], ...]
+    img_width: Optional[int] = None
+    img_height: Optional[int] = None
     latitude: Optional[float] = None
     longitude: Optional[float] = None
     place_name: Optional[str] = None

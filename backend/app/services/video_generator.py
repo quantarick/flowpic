@@ -103,12 +103,11 @@ class VideoGenerator:
 
             seg_duration = (seg_emo.end - seg_emo.start) + per_clip_extra
 
-            # Load and crop image
+            # Load and crop image (keep BGR for smart_fit saliency calculations)
             img_path = images_dir / match.image_filename
             img = cv2.imread(str(img_path))
             if img is None:
                 continue
-            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
             caption_info = caption_map.get(match.image_filename)
             face_regions = caption_info.face_regions if caption_info else []
@@ -131,15 +130,19 @@ class VideoGenerator:
                 scale_factor=1.0,
                 fit_mode=fit_mode,
                 subject_box=subject_box,
+                horizon_y=caption_info.horizon_y if caption_info else None,
+                people_centers=caption_info.people_centers if caption_info else None,
             )
-            canvas = fit_result.canvas
 
-            # Save cropped image (RGB→BGR for cv2.imwrite)
+            # Save cropped image for debugging (already BGR)
             stem = Path(match.image_filename).stem
             cv2.imwrite(
                 str(crops_dir / f"{i:03d}_{stem}_{fit_mode}.jpg"),
-                cv2.cvtColor(canvas, cv2.COLOR_RGB2BGR),
+                fit_result.canvas,
             )
+
+            # Convert to RGB for moviepy/Ken Burns rendering
+            canvas = cv2.cvtColor(fit_result.canvas, cv2.COLOR_BGR2RGB)
 
             # Remap face regions to canvas coordinates
             canvas_faces = remap_face_regions(face_regions, fit_result)

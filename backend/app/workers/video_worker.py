@@ -178,10 +178,27 @@ def run_pipeline(
     _progress(TaskStatus.CAPTIONING_IMAGES, 31, "Deduplicated",
               f"{len(image_captions)} unique images after dedup")
 
+    # === Step 3.6: Drop close-up portraits that can't be properly cropped ===
+    from app.services.smart_crop import check_face_fits, get_output_resolution
+    out_w, out_h = get_output_resolution(config.aspect_ratio, config.quality)
+    before_closeup = len(image_captions)
+    image_captions = [
+        ic for ic in image_captions
+        if not ic.face_regions or not ic.img_width
+        or check_face_fits(ic.img_width, ic.img_height, ic.face_regions, out_w, out_h)
+    ]
+    dropped = before_closeup - len(image_captions)
+    if dropped:
+        logger.info(f"Dropped {dropped} close-up images that can't be properly cropped")
+        _progress(TaskStatus.CAPTIONING_IMAGES, 31, "Close-up filter",
+                  f"Dropped {dropped} uncropable close-ups, {len(image_captions)} remaining")
+
     # === Step 4: Semantic Matching ===
     matches = _load_cache(proj_dir, "matches", MatchResult)
     location_groups = _load_cache(proj_dir, "location_groups", LocationGroup)
-    if matches and location_groups is not None:
+    merged_emotions = _load_cache(proj_dir, "merged_emotions", SegmentEmotion)
+    if matches and location_groups is not None and merged_emotions:
+        segment_emotions = merged_emotions
         logger.info("Loaded matches and location groups from cache")
         _progress(TaskStatus.MATCHING, 35, "Matching complete (cached)",
                   f"{len(matches)} segment-image pairs")
@@ -191,7 +208,7 @@ def run_pipeline(
 
         from app.services.matcher import SemanticMatcher
         matcher = SemanticMatcher()
-        matches = matcher.match(segment_emotions, image_captions, audio_features)
+        matches, segment_emotions = matcher.match(segment_emotions, image_captions, audio_features)
 
         _progress(TaskStatus.MATCHING, 35, "Matching complete",
                   f"{len(matches)} segment-image pairs")
@@ -213,6 +230,7 @@ def run_pipeline(
 
         _save_cache(proj_dir, "matches", matches)
         _save_cache(proj_dir, "location_groups", location_groups)
+        _save_cache(proj_dir, "merged_emotions", segment_emotions)
 
     # === Step 4.75: Review person crops ===
     _progress(TaskStatus.REVIEWING_CROPS, 36, "Reviewing crops", "Checking person visibility...")

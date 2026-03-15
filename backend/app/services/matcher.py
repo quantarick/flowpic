@@ -21,24 +21,34 @@ class SemanticMatcher:
         segment_emotions: list[SegmentEmotion],
         image_captions: list[ImageCaption],
         audio_features: AudioFeatures,
-    ) -> list[MatchResult]:
-        """Match music segments to images using semantic similarity."""
+    ) -> tuple[list[MatchResult], list[SegmentEmotion]]:
+        """Match music segments to images using semantic similarity.
+
+        Returns (matches, merged_segment_emotions) — the caller must use
+        the returned emotions for video timing, as segments may have been
+        merged to fit the available image count.
+        """
         self._load_model()
 
         n_segments = len(segment_emotions)
         n_images = len(image_captions)
 
         if n_images == 0 or n_segments == 0:
-            return []
+            return [], segment_emotions
 
         # Handle segment/image count mismatch
         if n_segments > n_images:
             segment_emotions = self._merge_segments(
                 segment_emotions, audio_features, target_count=n_images
             )
+        elif n_images > n_segments:
+            # More images than segments: split longest segments to create
+            # more slots so we can use more images.
+            segment_emotions = self._split_segments(
+                segment_emotions, target_count=n_images
+            )
+            n_segments = len(segment_emotions)
         else:
-            # Even when counts match, enforce minimum clip duration
-            segment_emotions = self._enforce_min_duration(segment_emotions, audio_features)
             n_segments = len(segment_emotions)
 
         # Encode mood descriptions and captions
@@ -73,7 +83,7 @@ class SemanticMatcher:
 
         # Sort by segment order
         results.sort(key=lambda m: m.segment_index)
-        return results
+        return results, segment_emotions
 
     def _merge_segments(
         self,
@@ -135,10 +145,65 @@ class SemanticMatcher:
         return merged
 
     @staticmethod
+    def _split_segments(
+        segments: list[SegmentEmotion],
+        target_count: int,
+        min_clip: float = 1.5,
+    ) -> list[SegmentEmotion]:
+        """Split longest segments to create more slots for images.
+
+        Repeatedly splits the longest segment in half until we reach
+        target_count or no segment can be split without going below min_clip.
+        """
+        result = list(segments)
+        while len(result) < target_count:
+            # Find the longest segment that can be split
+            best_idx = -1
+            best_dur = 0.0
+            for i, seg in enumerate(result):
+                dur = seg.end - seg.start
+                if dur > best_dur and dur / 2 >= min_clip:
+                    best_dur = dur
+                    best_idx = i
+            if best_idx < 0:
+                break  # No segment can be split further
+            seg = result[best_idx]
+            mid = (seg.start + seg.end) / 2
+            first_half = SegmentEmotion(
+                segment_index=seg.segment_index,
+                start=seg.start,
+                end=round(mid, 3),
+                valence=seg.valence,
+                arousal=seg.arousal,
+                mood_description=seg.mood_description,
+            )
+            second_half = SegmentEmotion(
+                segment_index=seg.segment_index + 1000,  # synthetic index
+                start=round(mid, 3),
+                end=seg.end,
+                valence=seg.valence,
+                arousal=seg.arousal,
+                mood_description=seg.mood_description,
+            )
+            result[best_idx] = first_half
+            result.insert(best_idx + 1, second_half)
+        # Re-index so segment_index is sequential
+        for i, seg in enumerate(result):
+            result[i] = SegmentEmotion(
+                segment_index=i,
+                start=seg.start,
+                end=seg.end,
+                valence=seg.valence,
+                arousal=seg.arousal,
+                mood_description=seg.mood_description,
+            )
+        return result
+
+    @staticmethod
     def _enforce_min_duration(
         segments: list[SegmentEmotion],
         audio_features: AudioFeatures,
-        min_duration: float = 3.0,
+        min_duration: float = 1.5,
     ) -> list[SegmentEmotion]:
         """Merge segments shorter than min_duration into their shortest neighbor."""
         merged = list(segments)
