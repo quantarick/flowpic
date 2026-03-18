@@ -29,6 +29,31 @@ logger = logging.getLogger(__name__)
 _use_gpu = torch.cuda.is_available()
 
 
+def _pick_encoder() -> tuple[str, list[str]]:
+    """Select the best available H.264 encoder: NVENC GPU → CPU fallback."""
+    import subprocess
+    from moviepy.config import FFMPEG_BINARY
+
+    try:
+        result = subprocess.run(
+            [FFMPEG_BINARY, "-encoders"],
+            capture_output=True, text=True, timeout=5,
+        )
+        encoders = result.stdout
+    except Exception:
+        encoders = ""
+
+    if "h264_nvenc" in encoders:
+        logger.info("Using NVENC GPU encoder (h264_nvenc)")
+        return "h264_nvenc", [
+            "-pix_fmt", "yuv420p",
+            "-preset", "p4", "-rc", "vbr", "-cq", "23",
+        ]
+    else:
+        logger.info("Using CPU encoder (libx264)")
+        return "libx264", ["-pix_fmt", "yuv420p"]
+
+
 class VideoGenerator:
     def __init__(
         self,
@@ -232,11 +257,13 @@ class VideoGenerator:
 
         # Write output
         output_path.parent.mkdir(parents=True, exist_ok=True)
+        codec, ffmpeg_params = _pick_encoder()
         final_clip.write_videofile(
             str(output_path),
             fps=self.fps,
-            codec="libx264",
+            codec=codec,
             audio_codec="aac",
+            ffmpeg_params=ffmpeg_params,
             logger=None,
         )
 

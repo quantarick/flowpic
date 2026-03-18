@@ -122,6 +122,8 @@ export function useProject() {
     if (!state.projectId) return;
     setState((s) => ({ ...s, loading: true, error: null, videoUrl: null }));
     try {
+      // Ensure config is synced to server before generating
+      await api.updateConfig(state.projectId, state.config);
       const { task_id } = await api.generateVideo(state.projectId);
       setState((s) => ({
         ...s,
@@ -136,7 +138,7 @@ export function useProject() {
         error: (e as Error).message,
       }));
     }
-  }, [state.projectId]);
+  }, [state.projectId, state.config]);
 
   const setStatus = useCallback((status: TaskStatus) => {
     setState((s) => {

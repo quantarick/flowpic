@@ -1,34 +1,45 @@
-"""Semantic matching: music mood ↔ image captions via sentence-transformer embeddings."""
+"""Semantic matching: music mood ↔ images via CLIP multimodal embeddings."""
+
+import logging
+from pathlib import Path
 
 import numpy as np
 from scipy.optimize import linear_sum_assignment
 
+from app.config import settings
 from app.models import AudioFeatures, ImageCaption, MatchResult, SegmentEmotion
+
+logger = logging.getLogger(__name__)
 
 
 class SemanticMatcher:
     def __init__(self):
-        self._model = None
+        self._clip = None
 
-    def _load_model(self):
-        if self._model is not None:
+    def _load_clip(self):
+        if self._clip is not None:
             return
-        from sentence_transformers import SentenceTransformer
-        self._model = SentenceTransformer("all-MiniLM-L6-v2")
+        from app.services.clip_encoder import CLIPEncoder
+        self._clip = CLIPEncoder()
 
     def match(
         self,
         segment_emotions: list[SegmentEmotion],
         image_captions: list[ImageCaption],
         audio_features: AudioFeatures,
+        images_dir: Path | None = None,
     ) -> tuple[list[MatchResult], list[SegmentEmotion]]:
-        """Match music segments to images using semantic similarity.
+        """Match music segments to images using CLIP multimodal similarity.
+
+        Uses a hybrid score:
+        - clip_image_weight: mood text ↔ image pixels (CLIP cross-modal)
+        - clip_text_weight: mood text ↔ caption text (CLIP text-text)
 
         Returns (matches, merged_segment_emotions) — the caller must use
         the returned emotions for video timing, as segments may have been
         merged to fit the available image count.
         """
-        self._load_model()
+        self._load_clip()
 
         n_segments = len(segment_emotions)
         n_images = len(image_captions)
@@ -42,8 +53,6 @@ class SemanticMatcher:
                 segment_emotions, audio_features, target_count=n_images
             )
         elif n_images > n_segments:
-            # More images than segments: split longest segments to create
-            # more slots so we can use more images.
             segment_emotions = self._split_segments(
                 segment_emotions, target_count=n_images
             )
@@ -51,25 +60,55 @@ class SemanticMatcher:
         else:
             n_segments = len(segment_emotions)
 
-        # Encode mood descriptions and captions
-        mood_texts = [se.mood_description for se in segment_emotions]
-        caption_texts = [ic.caption for ic in image_captions]
+        # Prefer visual_mood_description for CLIP (falls back to mood_description)
+        mood_texts = [
+            se.visual_mood_description or se.mood_description
+            for se in segment_emotions
+        ]
 
-        mood_embeddings = self._model.encode(mood_texts, normalize_embeddings=True)
-        caption_embeddings = self._model.encode(caption_texts, normalize_embeddings=True)
+        # Encode mood texts with CLIP
+        mood_embeddings = self._clip.encode_texts(mood_texts)
 
-        # Cosine similarity matrix (embeddings already normalized)
-        similarity = mood_embeddings @ caption_embeddings.T  # (n_segments, n_images)
+        # Encode images with CLIP (use cached embeddings if available)
+        w_img = settings.clip_image_weight
+        w_txt = settings.clip_text_weight
 
-        # Select best subset if more images than segments
-        if n_images > n_segments:
-            # Use Hungarian on full matrix, then take assigned columns
-            cost = -similarity
-            row_ind, col_ind = linear_sum_assignment(cost)
+        image_embeddings = self._encode_or_load_images(
+            image_captions, images_dir
+        )
+
+        if image_embeddings is not None and w_img > 0:
+            # Cross-modal: mood text ↔ image pixels
+            sim_image = mood_embeddings @ image_embeddings.T
         else:
-            # Square matrix: one-to-one
-            cost = -similarity
-            row_ind, col_ind = linear_sum_assignment(cost)
+            sim_image = None
+            w_img = 0.0
+            w_txt = 1.0
+
+        # Text-text: mood text ↔ caption text
+        caption_texts = [ic.caption for ic in image_captions]
+        caption_embeddings = self._clip.encode_texts(caption_texts)
+        sim_text = mood_embeddings @ caption_embeddings.T
+
+        # Hybrid similarity
+        if sim_image is not None:
+            similarity = w_img * sim_image + w_txt * sim_text
+        else:
+            similarity = sim_text
+
+        logger.info(
+            f"CLIP similarity stats — "
+            f"image signal: mean={sim_image.mean():.3f} std={sim_image.std():.3f}, "
+            f"text signal: mean={sim_text.mean():.3f} std={sim_text.std():.3f}, "
+            f"hybrid: mean={similarity.mean():.3f} std={similarity.std():.3f}"
+            if sim_image is not None else
+            f"CLIP similarity stats (text-only) — "
+            f"mean={similarity.mean():.3f} std={similarity.std():.3f}"
+        )
+
+        # Hungarian assignment
+        cost = -similarity
+        row_ind, col_ind = linear_sum_assignment(cost)
 
         results: list[MatchResult] = []
         for r, c in zip(row_ind, col_ind):
@@ -83,7 +122,58 @@ class SemanticMatcher:
 
         # Sort by segment order
         results.sort(key=lambda m: m.segment_index)
+
+        # Unload CLIP to free VRAM before rendering
+        self._clip.unload()
+        self._clip = None
+
         return results, segment_emotions
+
+    def _encode_or_load_images(
+        self,
+        image_captions: list[ImageCaption],
+        images_dir: Path | None,
+    ) -> np.ndarray | None:
+        """Encode images via CLIP, using cached embeddings where available."""
+        if images_dir is None:
+            logger.warning("No images_dir provided, skipping CLIP image encoding")
+            return None
+
+        # Check which images have cached embeddings
+        cached = []
+        uncached_indices = []
+        for i, ic in enumerate(image_captions):
+            if ic.clip_embedding is not None:
+                cached.append((i, np.array(ic.clip_embedding, dtype=np.float32)))
+            else:
+                uncached_indices.append(i)
+
+        if cached:
+            logger.info(
+                f"CLIP image embeddings: {len(cached)} from cache, "
+                f"{len(uncached_indices)} to encode"
+            )
+
+        # Encode uncached images
+        if uncached_indices:
+            paths = [images_dir / image_captions[i].filename for i in uncached_indices]
+            new_embeddings = self._clip.encode_images_batch(paths)
+
+            # Store back into ImageCaption objects for cache persistence
+            for j, idx in enumerate(uncached_indices):
+                image_captions[idx].clip_embedding = new_embeddings[j].tolist()
+
+        # Assemble full embedding matrix in order
+        n = len(image_captions)
+        dim = 512
+        result = np.zeros((n, dim), dtype=np.float32)
+        for i, emb in cached:
+            result[i] = emb
+        if uncached_indices:
+            for j, idx in enumerate(uncached_indices):
+                result[idx] = new_embeddings[j]
+
+        return result
 
     def _merge_segments(
         self,
@@ -138,6 +228,7 @@ class SemanticMatcher:
                 valence=round((a.valence + b.valence) / 2, 2),
                 arousal=round((a.arousal + b.arousal) / 2, 2),
                 mood_description=a.mood_description,
+                visual_mood_description=a.visual_mood_description,
             )
             merged[merge_idx] = merged_seg
             del merged[merge_idx + 1]
@@ -176,6 +267,7 @@ class SemanticMatcher:
                 valence=seg.valence,
                 arousal=seg.arousal,
                 mood_description=seg.mood_description,
+                visual_mood_description=seg.visual_mood_description,
             )
             second_half = SegmentEmotion(
                 segment_index=seg.segment_index + 1000,  # synthetic index
@@ -184,6 +276,7 @@ class SemanticMatcher:
                 valence=seg.valence,
                 arousal=seg.arousal,
                 mood_description=seg.mood_description,
+                visual_mood_description=seg.visual_mood_description,
             )
             result[best_idx] = first_half
             result.insert(best_idx + 1, second_half)
@@ -196,6 +289,7 @@ class SemanticMatcher:
                 valence=seg.valence,
                 arousal=seg.arousal,
                 mood_description=seg.mood_description,
+                visual_mood_description=seg.visual_mood_description,
             )
         return result
 
@@ -233,6 +327,7 @@ class SemanticMatcher:
                     valence=round((a.valence + b.valence) / 2, 2),
                     arousal=round((a.arousal + b.arousal) / 2, 2),
                     mood_description=a.mood_description,
+                    visual_mood_description=a.visual_mood_description,
                 )
                 del merged[hi]
                 changed = True

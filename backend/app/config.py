@@ -37,6 +37,11 @@ class Settings(BaseSettings):
     default_quality: str = "720p"
     default_aspect_ratio: str = "16:9"
 
+    # CLIP matching
+    clip_model: str = "ViT-B/32"
+    clip_image_weight: float = 0.7
+    clip_text_weight: float = 0.3
+
     # Processing
     max_workers: int = 2
     caption_parallel: int = 3

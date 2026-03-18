@@ -52,6 +52,9 @@ class EmotionClassifier:
             mood = self._mood_description(
                 seg_valence, seg_arousal, audio_features.tempo
             )
+            visual_mood = self._visual_mood_description(
+                seg_valence, seg_arousal, audio_features.tempo
+            )
 
             segment_emotions.append(
                 SegmentEmotion(
@@ -61,6 +64,7 @@ class EmotionClassifier:
                     valence=round(seg_valence, 2),
                     arousal=round(seg_arousal, 2),
                     mood_description=mood,
+                    visual_mood_description=visual_mood,
                 )
             )
 
@@ -101,6 +105,97 @@ class EmotionClassifier:
             intensity = "quiet stillness"
 
         return f"{core_mood}. {tempo_q.capitalize()} with {intensity}."
+
+    @staticmethod
+    def _visual_mood_description(
+        valence: float, arousal: float, tempo: float
+    ) -> str:
+        """Generate a visually descriptive mood prompt optimized for CLIP.
+
+        Uses 8 valence/arousal zones with concrete scene templates.
+        Tempo selects which template within each zone for variety.
+        """
+        # 8 zones: high/low valence × high/mid/low arousal, plus extremes
+        if valence >= 6.5 and arousal >= 6.5:
+            # High energy, very positive
+            scenes = [
+                "friends celebrating at a festival with colorful lights and confetti",
+                "people dancing on a sunlit beach with turquoise waves",
+                "a vibrant city street at night with neon signs and crowds",
+                "fireworks exploding over a lively crowd at a summer concert",
+            ]
+        elif valence >= 5.0 and arousal >= 6.5:
+            # High energy, moderately positive
+            scenes = [
+                "a runner crossing a finish line at sunrise with golden light",
+                "waves crashing on rocky cliffs under a dramatic blue sky",
+                "a bustling market with bright fruit stalls and sunlight streaming in",
+                "cyclists riding through autumn trees with leaves blowing in the wind",
+            ]
+        elif valence >= 6.5 and arousal < 6.5 and arousal >= 3.5:
+            # Moderate energy, very positive
+            scenes = [
+                "friends walking on a beach at golden hour with warm natural lighting",
+                "a cozy cafe with warm lamp light and steaming coffee cups",
+                "a sunlit garden with blooming flowers and butterflies",
+                "a couple watching a sunset from a hilltop with orange skies",
+            ]
+        elif valence >= 5.0 and arousal >= 3.5:
+            # Moderate energy, moderately positive
+            scenes = [
+                "a peaceful countryside road lined with green trees in soft daylight",
+                "a calm lake reflecting autumn colors under a clear sky",
+                "a quiet park bench under cherry blossom trees in spring",
+                "a small boat floating on still water at dawn with mist",
+            ]
+        elif valence < 5.0 and arousal >= 6.5:
+            # High energy, negative — intense/dramatic
+            scenes = [
+                "dark storm clouds gathering over a turbulent ocean",
+                "lightning striking a desolate landscape at night",
+                "a lone figure standing on a windswept cliff in heavy rain",
+                "an abandoned industrial building under a brooding grey sky",
+            ]
+        elif valence < 3.5 and arousal < 3.5:
+            # Low energy, very negative — deep melancholy
+            scenes = [
+                "an empty bench in a foggy park with fallen leaves",
+                "a dimly lit empty room with rain streaking down the window",
+                "a solitary tree in a misty field at dusk with fading light",
+                "a dark hallway with a single flickering light at the end",
+            ]
+        elif valence < 5.0 and arousal < 3.5:
+            # Low energy, moderately negative — wistful/somber
+            scenes = [
+                "a quiet rainy street at twilight with reflections on wet pavement",
+                "a misty forest path with soft diffused light filtering through trees",
+                "an old wooden pier extending into calm grey water under overcast sky",
+                "a snow-covered village at dusk with warm light in distant windows",
+            ]
+        else:
+            # Low energy, neutral/slightly negative
+            scenes = [
+                "a moonlit path through a silent forest with soft blue shadows",
+                "a still pond surrounded by willows in the quiet of evening",
+                "a deserted street at dawn with pale golden light on old buildings",
+                "a distant mountain range under a hazy lavender sky at twilight",
+            ]
+
+        # Select scene based on tempo for variety
+        idx = int(tempo) % len(scenes)
+        scene = scenes[idx]
+
+        # Lighting modifier based on arousal intensity
+        if arousal > 7.5:
+            lighting = " with dramatic high-contrast lighting"
+        elif arousal > 5.5:
+            lighting = " with vivid natural lighting"
+        elif arousal > 3.5:
+            lighting = " with soft warm lighting"
+        else:
+            lighting = " with dim atmospheric lighting"
+
+        return f"a photograph of {scene}{lighting}"
 
     @staticmethod
     def enrich_with_lyrics(

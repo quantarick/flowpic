@@ -208,7 +208,10 @@ def run_pipeline(
 
         from app.services.matcher import SemanticMatcher
         matcher = SemanticMatcher()
-        matches, segment_emotions = matcher.match(segment_emotions, image_captions, audio_features)
+        matches, segment_emotions = matcher.match(
+            segment_emotions, image_captions, audio_features,
+            images_dir=images_dir,
+        )
 
         _progress(TaskStatus.MATCHING, 35, "Matching complete",
                   f"{len(matches)} segment-image pairs")
@@ -227,6 +230,9 @@ def run_pipeline(
         location_groups = _compute_location_groups(matches, image_captions)
         if location_groups:
             logger.info(f"Location groups: {len(location_groups)} distinct locations")
+
+        # Persist CLIP embeddings back to per-image caption cache
+        _persist_clip_embeddings(proj_dir, image_captions)
 
         _save_cache(proj_dir, "matches", matches)
         _save_cache(proj_dir, "location_groups", location_groups)
@@ -560,9 +566,29 @@ def _compute_location_groups(
     return groups
 
 
+def _persist_clip_embeddings(proj_dir: Path, image_captions: list[ImageCaption]):
+    """Write CLIP embeddings back to per-image caption cache files."""
+    captions_dir = proj_dir / "captions"
+    if not captions_dir.exists():
+        return
+    for ic in image_captions:
+        if ic.clip_embedding is None:
+            continue
+        stem = Path(ic.filename).stem
+        cache_file = captions_dir / f"{stem}.json"
+        if cache_file.exists():
+            try:
+                cache_file.write_text(
+                    ic.model_dump_json(), encoding="utf-8"
+                )
+            except Exception as e:
+                logger.warning(f"Failed to persist CLIP embedding for {ic.filename}: {e}")
+
+
 def _fallback_emotions(audio_features: AudioFeatures):
     """Generate synthetic emotions when Music2Emo is unavailable."""
     from app.models import SegmentEmotion
+    from app.services.emotion_classifier import EmotionClassifier
 
     results = []
     max_energy = max((s.rms_energy for s in audio_features.segments), default=1e-6)
@@ -593,6 +619,10 @@ def _fallback_emotions(audio_features: AudioFeatures):
         else:
             mood += ". Gentle with quiet stillness."
 
+        visual_mood = EmotionClassifier._visual_mood_description(
+            valence, arousal, tempo
+        )
+
         results.append(SegmentEmotion(
             segment_index=i,
             start=seg.start,
@@ -600,6 +630,7 @@ def _fallback_emotions(audio_features: AudioFeatures):
             valence=round(valence, 2),
             arousal=round(arousal, 2),
             mood_description=mood,
+            visual_mood_description=visual_mood,
         ))
 
     return results

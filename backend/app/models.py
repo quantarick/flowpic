@@ -117,6 +117,7 @@ class SegmentEmotion(BaseModel):
     valence: float
     arousal: float
     mood_description: str
+    visual_mood_description: Optional[str] = None
 
 
 class FaceRegion(BaseModel):
@@ -141,6 +142,7 @@ class ImageCaption(BaseModel):
     element_type: Optional[str] = None  # person/animal/landscape/architecture/object
     horizon_y: Optional[float] = None  # 0-1 normalized horizon position
     people_centers: Optional[list[list[float]]] = None  # [[x1,y1], [x2,y2], ...]
+    clip_embedding: Optional[list[float]] = None
     img_width: Optional[int] = None
     img_height: Optional[int] = None
     latitude: Optional[float] = None
