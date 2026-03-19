@@ -1,6 +1,24 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import * as api from "../api/client";
 import type { AspectRatio, ProjectConfig, Quality, TaskStatus } from "../types";
+
+const STORAGE_KEY = "flowpic_session";
+
+function loadSession(): { projectId: string | null; taskId: string | null } {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) return JSON.parse(raw);
+  } catch {}
+  return { projectId: null, taskId: null };
+}
+
+function saveSession(projectId: string | null, taskId: string | null) {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ projectId, taskId }));
+  } catch {}
+}
+
+const TERMINAL_STATUSES = new Set(["done", "failed", "cancelled"]);
 
 export interface ProjectState {
   projectId: string | null;
@@ -33,13 +51,78 @@ export function useProject() {
     status: null,
     videoUrl: null,
     error: null,
-    loading: false,
+    loading: true, // loading while checking for active project
   });
+
+  // Restore project and active task on mount
+  useEffect(() => {
+    (async () => {
+      try {
+        const saved = loadSession();
+
+        // Ask backend for the active project (has uploads, no completed task)
+        const info = await api.getActiveProject();
+        if (!info) {
+          // No active project — check if saved task is done
+          if (saved.projectId && saved.taskId) {
+            const tasks = await api.fetchTasks(50);
+            const doneTask = tasks.find((t) => t.task_id === saved.taskId);
+            if (doneTask?.status === "done") {
+              const projInfo = await api.getProject(saved.projectId);
+              setState((s) => ({
+                ...s,
+                projectId: saved.projectId,
+                images: projInfo.images,
+                music: projInfo.music,
+                config: { ...defaultConfig, ...projInfo.config },
+                taskId: doneTask.task_id,
+                status: "done",
+                videoUrl: api.getDownloadUrl(doneTask.task_id),
+                loading: false,
+              }));
+              return;
+            }
+          }
+          saveSession(null, null);
+          setState((s) => ({ ...s, projectId: null, loading: false }));
+          return;
+        }
+
+        const baseState: Partial<ProjectState> = {
+          projectId: info.project_id,
+          images: info.images,
+          music: info.music,
+          config: { ...defaultConfig, ...info.config },
+          loading: false,
+        };
+
+        // Check if this project has an active task to reconnect to
+        const tasks = await api.fetchTasks(50);
+        const activeTask = tasks.find(
+          (t) => t.project_id === info.project_id && !TERMINAL_STATUSES.has(t.status)
+        );
+
+        if (activeTask) {
+          baseState.taskId = activeTask.task_id;
+          baseState.status = activeTask.status;
+          saveSession(info.project_id, activeTask.task_id);
+        } else {
+          saveSession(info.project_id, null);
+        }
+
+        setState((s) => ({ ...s, ...baseState }));
+      } catch {
+        saveSession(null, null);
+        setState((s) => ({ ...s, projectId: null, loading: false }));
+      }
+    })();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const createProject = useCallback(async () => {
     setState((s) => ({ ...s, loading: true, error: null }));
     try {
       const { project_id } = await api.createProject();
+      saveSession(project_id, null);
       setState((s) => ({ ...s, projectId: project_id, loading: false }));
       return project_id;
     } catch (e) {
@@ -125,6 +208,7 @@ export function useProject() {
       // Ensure config is synced to server before generating
       await api.updateConfig(state.projectId, state.config);
       const { task_id } = await api.generateVideo(state.projectId);
+      saveSession(state.projectId, task_id);
       setState((s) => ({
         ...s,
         taskId: task_id,
@@ -151,22 +235,28 @@ export function useProject() {
   }, []);
 
   const setDone = useCallback((taskId: string) => {
-    setState((s) => ({
-      ...s,
-      status: "done",
-      taskId,
-      videoUrl: api.getDownloadUrl(taskId),
-    }));
+    setState((s) => {
+      saveSession(s.projectId, taskId);
+      return {
+        ...s,
+        status: "done",
+        taskId,
+        videoUrl: api.getDownloadUrl(taskId),
+      };
+    });
   }, []);
 
   const setTaskId = useCallback((taskId: string) => {
-    setState((s) => ({
-      ...s,
-      taskId,
-      status: "pending",
-      videoUrl: null,
-      error: null,
-    }));
+    setState((s) => {
+      saveSession(s.projectId, taskId);
+      return {
+        ...s,
+        taskId,
+        status: "pending",
+        videoUrl: null,
+        error: null,
+      };
+    });
   }, []);
 
   return {

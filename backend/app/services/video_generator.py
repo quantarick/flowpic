@@ -156,6 +156,7 @@ class VideoGenerator:
                 fit_mode=fit_mode,
                 subject_box=subject_box,
                 horizon_y=caption_info.horizon_y if caption_info else None,
+                horizon_valid=caption_info.horizon_valid if caption_info else False,
                 people_centers=caption_info.people_centers if caption_info else None,
             )
 

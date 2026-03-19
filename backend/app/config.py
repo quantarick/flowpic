@@ -12,8 +12,8 @@ class Settings(BaseSettings):
 
     # Ollama
     ollama_base_url: str = "http://localhost:11434"
-    ollama_model: str = "llava-phi3"
-    ollama_timeout: int = 120
+    ollama_model: str = "qwen2.5vl:7b"
+    ollama_timeout: int = 300
 
     # Lyrics analysis
     lyrics_enabled: bool = True
@@ -44,7 +44,7 @@ class Settings(BaseSettings):
 
     # Processing
     max_workers: int = 2
-    caption_parallel: int = 3
+    caption_parallel: int = 1
 
     model_config = {"env_prefix": "FLOWPIC_"}
 

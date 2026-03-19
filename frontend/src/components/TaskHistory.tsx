@@ -217,7 +217,7 @@ export function TaskHistory({ activeTaskId, onSelect, onRetry }: Props) {
             };
             const isActive = tk.task_id === activeTaskId;
             const isDone = tk.status === "done";
-            const canRetry = tk.status === "failed" || tk.status === "cancelled";
+            const canRetry = tk.status === "failed" || tk.status === "cancelled" || tk.status === "done";
             const isRunning = !["done", "failed", "cancelled"].includes(tk.status);
             const isExpanded = expandedId === tk.task_id;
 

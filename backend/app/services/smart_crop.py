@@ -66,6 +66,7 @@ def smart_fit(
     fit_mode: str = "crop",
     subject_box: tuple[float, float, float, float] | None = None,
     horizon_y: float | None = None,
+    horizon_valid: bool = False,
     people_centers: list[list[float]] | None = None,
 ) -> FitResult:
     """Fit image to canvas using LLM-decided mode.
@@ -74,6 +75,7 @@ def smart_fit(
     fit_mode="full": blurred background fill to preserve full subject.
     subject_box: (x1, y1, x2, y2) normalized 0-1 bounding box of main subject.
     horizon_y: LLM-provided horizon position (0-1), used instead of CV detection.
+    horizon_valid: LLM confirmed this is a clear skyline/coastline/treeline.
     people_centers: [[x,y], ...] LLM-provided person center positions (0-1).
     """
     h, w = image.shape[:2]
@@ -87,7 +89,7 @@ def smart_fit(
             avg_y = sum(p[1] for p in people_centers) / len(people_centers)
             avg_x = sum(p[0] for p in people_centers) / len(people_centers)
             return _crop_fill(image, out_w, out_h, None, avg_x, avg_y, None,
-                              horizon_y=horizon_y)
+                              horizon_y=horizon_y, horizon_valid=horizon_valid)
         # Use subject_box if valid, otherwise fall back to saliency.
         if subject_box is not None:
             sx1, sy1, sx2, sy2 = subject_box
@@ -102,22 +104,22 @@ def smart_fit(
                     head_fy = max(0.20, min(0.45, head_fy))
                     return _crop_fill(image, out_w, out_h, None,
                                       (sx1 + sx2) / 2, head_fy, None,
-                                      horizon_y=horizon_y)
+                                      horizon_y=horizon_y, horizon_valid=horizon_valid)
                 # Valid box covering person — use upper-fifth as focus
                 # (biased toward head area for person subjects).
                 box_focus_y = sy1 + box_height * 0.20
                 return _crop_fill(image, out_w, out_h, None,
                                   (sx1 + sx2) / 2, box_focus_y, None,
-                                  horizon_y=horizon_y)
+                                  horizon_y=horizon_y, horizon_valid=horizon_valid)
         return _crop_fill(image, out_w, out_h, None, 0.5, 0.5, None,
-                          horizon_y=horizon_y)
+                          horizon_y=horizon_y, horizon_valid=horizon_valid)
 
     if fit_mode == "full":
         return _blur_fill(image, out_w, out_h, face_regions, focus_x, focus_y, subject_box,
-                          people_centers=people_centers)
+                          people_centers=people_centers, horizon_y=horizon_y)
 
     return _crop_fill(image, out_w, out_h, face_regions, focus_x, focus_y, subject_box,
-                      horizon_y=horizon_y)
+                      horizon_y=horizon_y, horizon_valid=horizon_valid)
 
 
 def _crop_fill(
@@ -129,6 +131,7 @@ def _crop_fill(
     focus_y: float,
     subject_box: tuple[float, float, float, float] | None = None,
     horizon_y: float | None = None,
+    horizon_valid: bool = False,
 ) -> FitResult:
     """Crop-to-fill: scale to cover, crop centered on interest point."""
     h, w = image.shape[:2]
@@ -141,7 +144,7 @@ def _crop_fill(
         box_area = (sx2 - sx1) * (sy2 - sy1)
         box_height = sy2 - sy1
         if box_area >= 0.05 and box_height >= 0.15:
-            return _subject_box_crop(image, out_w, out_h, subject_box)
+            return _subject_box_crop(image, out_w, out_h, subject_box, horizon_y=horizon_y)
         # Rejected subject_box → focus from same LLM call is equally unreliable.
         # Reset to default so saliency centering takes over.
         focus_x = 0.5
@@ -168,16 +171,13 @@ def _crop_fill(
     elif focus_x != 0.5 or focus_y != 0.5:
         crop_cx = focus_x * scaled_w
         crop_cy = focus_y * scaled_h
-    elif horizon_y is not None and horizon_y <= 0.65:
-        # LLM-provided horizon: position depends on where it falls.
+    elif horizon_y is not None and horizon_valid and horizon_y <= 0.65:
+        # LLM confirmed a clear skyline/coastline/treeline — use it for composition.
         crop_cx = scaled_w / 2
         if horizon_y < 0.45:
-            # Upper horizon: shift below to show boundary near crop top
             horizon_px = horizon_y * scaled_h
             crop_cy = horizon_px + (scaled_h - horizon_px) * 0.30
         else:
-            # Mid horizon (45-65%): center on it to show both above and below.
-            # Without knowing what's scenic (trees vs sand), centering is safest.
             crop_cy = horizon_y * scaled_h
     else:
         sal_cx, sal_cy = _saliency_center(scaled)
@@ -215,6 +215,7 @@ def _subject_box_crop(
     out_w: int,
     out_h: int,
     subject_box: tuple[float, float, float, float],
+    horizon_y: float | None = None,
 ) -> FitResult:
     """Bounding-box-aware crop: zoom to fit the subject with padding."""
     h, w = image.shape[:2]
@@ -239,19 +240,58 @@ def _subject_box_crop(
     scaled_h = int(h * scale)
     scaled = cv2.resize(image, (scaled_w, scaled_h), interpolation=cv2.INTER_LANCZOS4)
 
-    # Center crop on the subject center
-    subj_cx = ((x1 + x2) / 2) * scaled_w
-    subj_cy = ((y1 + y2) / 2) * scaled_h
+    # Position crop to maximally cover the subject box.
+    # Convert box edges to scaled pixel coords
+    box_top = y1 * scaled_h
+    box_bot = y2 * scaled_h
+    box_left = x1 * scaled_w
+    box_right = x2 * scaled_w
+    box_h = box_bot - box_top
+    box_w = box_right - box_left
 
-    x_off = int(subj_cx - out_w / 2)
-    y_off = int(subj_cy - out_h / 2)
+    # If the box fits within the crop, center on it
+    # If not, bias toward the content-heavy end (where the box extends further)
+    if box_h <= out_h:
+        # Box fits vertically — center on it
+        y_center = (box_top + box_bot) / 2
+        y_off = int(y_center - out_h / 2)
+    else:
+        # Box is taller than crop.
+        # If bounds are near full-frame and we have a horizon, use the horizon
+        # as the anchor — place it at the upper golden ratio (38%) of the crop
+        # to balance sky and land.
+        is_full_frame = (y2 - y1) > 0.85 and (x2 - x1) > 0.85
+        if is_full_frame and horizon_y is not None:
+            # Place horizon at 38% from top of crop (golden ratio)
+            horizon_px = horizon_y * scaled_h
+            target_y_in_crop = out_h * 0.38
+            y_off = int(horizon_px - target_y_in_crop)
+        elif y1 > 0.50 and y2 > 0.90:
+            # Content is genuinely in the lower half — show bottom
+            y_off = int(box_bot - out_h)
+        else:
+            y_off = int((box_top + box_bot) / 2 - out_h / 2)
+
+    if box_w <= out_w:
+        x_center = (box_left + box_right) / 2
+        x_off = int(x_center - out_w / 2)
+    else:
+        x_center = (box_left + box_right) / 2
+        if x1 > 0.50 and x2 > 0.90:
+            x_off = int(box_right - out_w)
+        else:
+            x_off = int(x_center - out_w / 2)
+
     x_off = max(0, min(x_off, scaled_w - out_w))
     y_off = max(0, min(y_off, scaled_h - out_h))
 
     canvas = scaled[y_off:y_off + out_h, x_off:x_off + out_w]
 
-    cx = max(0.0, min(1.0, (subj_cx - x_off) / out_w))
-    cy = max(0.0, min(1.0, (subj_cy - y_off) / out_h))
+    # Content center in canvas coords
+    box_cx = (box_left + box_right) / 2
+    box_cy = (box_top + box_bot) / 2
+    cx = max(0.0, min(1.0, (box_cx - x_off) / out_w))
+    cy = max(0.0, min(1.0, (box_cy - y_off) / out_h))
 
     return FitResult(
         canvas=canvas,
@@ -271,6 +311,7 @@ def _blur_fill(
     focus_y: float = 0.5,
     subject_box: tuple[float, float, float, float] | None = None,
     people_centers: list[list[float]] | None = None,
+    horizon_y: float | None = None,
 ) -> FitResult:
     """Zoom-to-cover and crop centered on the subject.
 
@@ -288,7 +329,7 @@ def _blur_fill(
         box_area = (sx2 - sx1) * (sy2 - sy1)
         box_height = sy2 - sy1
         if box_area >= 0.05 and box_height >= 0.15:
-            return _subject_box_crop(image, out_w, out_h, subject_box)
+            return _subject_box_crop(image, out_w, out_h, subject_box, horizon_y=horizon_y)
 
     # Scale to COVER the canvas (same as crop mode)
     img_aspect = w / h

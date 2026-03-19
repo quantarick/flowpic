@@ -104,13 +104,13 @@ async def retry_task(
     task_id: str,
     tm: TaskManager = Depends(get_task_manager),
 ):
-    """Retry a failed/cancelled task by re-submitting the same project."""
+    """Retry a task by re-submitting the same project."""
     from app.services.task_db import get_task as db_get
     old_task = db_get(task_id)
     if not old_task:
         raise HTTPException(404, "Task not found")
-    if old_task.status not in (TaskStatus.FAILED, TaskStatus.CANCELLED):
-        raise HTTPException(400, "Only failed or cancelled tasks can be retried")
+    if old_task.status not in (TaskStatus.FAILED, TaskStatus.CANCELLED, TaskStatus.DONE):
+        raise HTTPException(400, "Only finished tasks can be retried")
 
     proj_dir = settings.data_dir / old_task.project_id
     if not proj_dir.exists():

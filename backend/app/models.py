@@ -141,7 +141,10 @@ class ImageCaption(BaseModel):
     fit_mode: str = "crop"  # "crop" or "full" (blur fill)
     element_type: Optional[str] = None  # person/animal/landscape/architecture/object
     horizon_y: Optional[float] = None  # 0-1 normalized horizon position
+    horizon_type: Optional[str] = None  # skyline, coastline, treeline, mountain_ridge, roofline
+    horizon_valid: bool = False  # LLM confirms this is a clear, usable boundary
     people_centers: Optional[list[list[float]]] = None  # [[x1,y1], [x2,y2], ...]
+    crop_hint: Optional[str] = None  # LLM composition advice for cropping
     clip_embedding: Optional[list[float]] = None
     img_width: Optional[int] = None
     img_height: Optional[int] = None

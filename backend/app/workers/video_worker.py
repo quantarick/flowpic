@@ -164,8 +164,9 @@ def run_pipeline(
 
     def caption_progress(done: int, total: int):
         pct = 16 + (done / total) * 14  # 16% to 30%
+        step_pct = int(done / total * 100)
         _progress(TaskStatus.CAPTIONING_IMAGES, pct, "Captioning images",
-                  f"{done}/{total} images captioned")
+                  f"{done}/{total} images ({step_pct}%)")
         _check_cancel()
 
     image_captions = captioner.caption_images(image_paths, progress_callback=caption_progress)
@@ -238,25 +239,8 @@ def run_pipeline(
         _save_cache(proj_dir, "location_groups", location_groups)
         _save_cache(proj_dir, "merged_emotions", segment_emotions)
 
-    # === Step 4.75: Review person crops ===
-    _progress(TaskStatus.REVIEWING_CROPS, 36, "Reviewing crops", "Checking person visibility...")
-    _check_cancel()
-
-    from app.services.crop_reviewer import CropReviewer
-    reviewer = CropReviewer(model=config.vision_model)
-    person_count = sum(1 for ic in image_captions if ic.has_person)
-    if person_count > 0:
-        def review_progress(done, total):
-            pct = 36 + (done / total) * 4  # 36% to 40%
-            _progress(TaskStatus.REVIEWING_CROPS, pct, "Reviewing crops",
-                      f"{done}/{total} person images reviewed")
-            _check_cancel()
-
-        image_captions = reviewer.review_crops(
-            matches, image_captions, images_dir,
-            config.aspect_ratio, config.quality,
-            progress_callback=review_progress,
-        )
+    # === Step 4.75: Review person crops (skipped — captioning prompt handles composition) ===
+    _progress(TaskStatus.REVIEWING_CROPS, 40, "Skipping crop review", "Using captioner composition data")
 
     # === Step 5: Render Video ===
     _progress(TaskStatus.RENDERING, 40, "Rendering video", "Generating Ken Burns frames...")
@@ -271,8 +255,9 @@ def run_pipeline(
 
     def render_progress(done: int, total: int):
         pct = 40 + (done / total) * 40  # 40% to 80%
+        step_pct = int(done / total * 100)
         _progress(TaskStatus.RENDERING, pct, "Rendering video",
-                  f"{done}/{total} segments rendered")
+                  f"{done}/{total} segments ({step_pct}%)")
         _check_cancel()
 
     # === Step 5+6: Generate + Encode ===

@@ -18,23 +18,50 @@ from app.config import settings
 from app.models import FaceRegion, ImageCaption
 
 BASE_PROMPT = (
-    "Analyze this image and respond in exactly this format:\n"
-    "CAPTION: (2-3 sentences describing scene, mood, visual qualities)\n"
-    "ELEMENT: (one word: person, animal, landscape, architecture, object, or other)\n"
-    "SUBJECT: x%, y% (center position of the main subject as percentages from top-left)\n"
-    "BOUNDS: x1%, y1%, x2%, y2% (bounding box of the main subject — "
-    "top-left and bottom-right corners as percentages)\n"
-    "PERSON: YES or NO (is there any human figure — front, back, side, silhouette, any pose)\n"
-    "PEOPLE: count, then center of each person as x%,y% (or 0 if no people)\n"
-    "HORIZON: y% (vertical position of the horizon/skyline/treeline, or NONE if indoors/no visible horizon)\n"
-    "Example response:\n"
-    "CAPTION: A woman walks along the beach at sunset. The mood is serene and warm.\n"
-    "ELEMENT: person\n"
-    "SUBJECT: 40%, 50%\n"
-    "BOUNDS: 25%, 20%, 55%, 80%\n"
-    "PERSON: YES\n"
-    "PEOPLE: 1, 40%,50%\n"
-    "HORIZON: 65%"
+    "Analyze this image for cinematic cropping. Output ONLY plain text lines, NO markdown.\n\n"
+    "First describe what is at each edge, then analyze the full image.\n"
+    "TOP: what is at the top 10%\n"
+    "BOTTOM: what is at the bottom 10%\n"
+    "LEFT: what is at the left 10%\n"
+    "RIGHT: what is at the right 10%\n"
+    "CAPTION: 2-3 sentences on scene, mood, light\n"
+    "ELEMENT: person/animal/landscape/architecture/object/other\n"
+    "SUBJECT: x%, y% (measure the ACTUAL position of the main subject — do NOT default to 50%,50%)\n"
+    "BOUNDS: x1%, y1%, x2%, y2% (use your edge analysis! If TOP has content like trees/buildings, "
+    "y1 must be 0%. If BOTTOM has content like beach/ground, y2 must be 100%. "
+    "Only exclude edges that are EMPTY sky or plain water. "
+    "If a person is visible, BOUNDS MUST include their full body head to toe)\n"
+    "PERSON: YES/NO\n"
+    "PEOPLE: count, x%,y% per person (0 if none)\n"
+    "HORIZON: y%, type, valid (type=skyline/coastline/treeline/mountain/none; valid=yes/no)\n"
+    "CROP_HINT: what to keep, what to cut, and desired sky-land balance\n\n"
+    "Example for a palm tree silhouette with sunset and misty hills:\n"
+    "TOP: golden sky with clouds\n"
+    "BOTTOM: dark fern leaves and vegetation\n"
+    "LEFT: tall palm tree trunk from bottom to top\n"
+    "RIGHT: misty valley with distant trees\n"
+    "CAPTION: Silhouetted palm tree against golden sunset over misty hills.\n"
+    "ELEMENT: landscape\n"
+    "SUBJECT: 28%, 35%\n"
+    "BOUNDS: 0%, 0%, 100%, 100%\n"
+    "PERSON: NO\n"
+    "PEOPLE: 0\n"
+    "HORIZON: 60%, treeline, yes\n"
+    "CROP_HINT: keep full palm tree, center on horizon glow, balance sky and land equally\n\n"
+    "Example for island rock at bottom-right with too much empty sky:\n"
+    "TOP: plain blue sky\n"
+    "BOTTOM: turquoise water, rocky coastline with grass\n"
+    "LEFT: open ocean\n"
+    "RIGHT: rocky island formation with vegetation\n"
+    "CAPTION: Rocky island in turquoise sea under clear sky.\n"
+    "ELEMENT: landscape\n"
+    "SUBJECT: 75%, 72%\n"
+    "BOUNDS: 0%, 40%, 100%, 100%\n"
+    "PERSON: NO\n"
+    "PEOPLE: 0\n"
+    "HORIZON: 38%, skyline, yes\n"
+    "CROP_HINT: cut sky above 30%, keep full island and coastline, 40/60 sky-land ratio\n\n"
+    "Now analyze the image:"
 )
 
 
@@ -58,8 +85,17 @@ class ImageCaptioner:
             )
         return self._hog_detector
 
+    _valid_extensions = {".jpg", ".jpeg", ".png", ".webp"}
+
     def caption_image(self, image_path: Path) -> ImageCaption:
         """Generate caption for a single image using Ollama + detect faces/bodies."""
+        if image_path.suffix.lower() not in self._valid_extensions:
+            logger.warning(f"Skipping non-image file: {image_path.name}")
+            return ImageCaption(
+                filename=image_path.name,
+                caption="Not an image file.",
+            )
+
         # Check cache
         cache_dir = image_path.parent.parent / "captions"
         cache_dir.mkdir(exist_ok=True)
@@ -102,29 +138,15 @@ class ImageCaptioner:
         # at least one CV detector (face or body) confirms.
         has_person = bool(face_regions) or bool(body_rects)
 
-        # If no CV detection but caption mentions humans, the LLM likely
-        # hallucinated (e.g., parroting the example response).  Replace
-        # caption and clear all LLM-derived positioning to prevent bad crops.
-        if not face_regions and not body_rects:
-            _human_words = {
-                "woman", "man", "person", "people", "child", "boy", "girl",
-                "he ", "she ", "his ", "her ", "they ", "walks", "walking",
-                "standing", "sitting", "holding",
-            }
-            caption_lower = info["caption"].lower()
-            if any(w in caption_lower for w in _human_words):
-                logger.info(f"[{image_path.name}] Caption mentions humans but no CV detection — replacing")
-                info["caption"] = "A photograph with various visual elements."
-                info["focus_x"] = 0.5
-                info["focus_y"] = 0.5
-                info["subject_x1"] = None
-                info["subject_y1"] = None
-                info["subject_x2"] = None
-                info["subject_y2"] = None
-                # People centers are from the same unreliable LLM call
-                info["people_centers"] = None
-                if info.get("element_type") == "person":
-                    info["element_type"] = None
+        # If LLM claims PERSON: YES but no CV detection, the LLM likely
+        # hallucinated.  Only clear person-related fields, keep the caption
+        # and composition data (focus, horizon, crop_hint) intact.
+        if not face_regions and not body_rects and info.get("has_person"):
+            logger.info(f"[{image_path.name}] LLM says PERSON:YES but no CV detection — clearing person fields, keeping caption")
+            info["has_person"] = False
+            info["people_centers"] = None
+            if info.get("element_type") == "person":
+                info["element_type"] = None
 
         # If CV found bodies but LLM focus is default, use body center as focus
         focus_x, focus_y = info["focus_x"], info["focus_y"]
@@ -158,10 +180,13 @@ class ImageCaptioner:
             subject_y1=info.get("subject_y1"),
             subject_x2=info.get("subject_x2"),
             subject_y2=info.get("subject_y2"),
-            fit_mode="full" if has_person else "crop",
+            fit_mode="crop" if info.get("element_type") in ("landscape", "architecture") else ("full" if has_person else "crop"),
             element_type=info.get("element_type"),
             horizon_y=info.get("horizon_y"),
+            horizon_type=info.get("horizon_type"),
+            horizon_valid=info.get("horizon_valid", False),
             people_centers=info.get("people_centers"),
+            crop_hint=info.get("crop_hint"),
             img_width=img_width if img_width > 0 else None,
             img_height=img_height if img_height > 0 else None,
             latitude=latitude,
@@ -278,10 +303,13 @@ class ImageCaptioner:
                     raw = self._ollama_generate(client, image_b64, prompt)
                 else:
                     raw = self._ollama_chat(client, image_b64, prompt)
+                logger.info(f"[Ollama raw] len={len(raw)} lines={len(raw.splitlines())} | {raw[:300]}...END={raw[-200:]}")
                 return self._parse_response(raw)
         except httpx.TimeoutException:
+            logger.warning(f"Ollama timeout after {settings.ollama_timeout}s")
             return dict(self._default_info)
         except Exception as e:
+            logger.warning(f"Ollama error: {e}")
             return {**self._default_info, "caption": f"An image. (Caption unavailable: {e})"}
 
     def _ollama_generate(self, client: httpx.Client, image_b64: str, prompt: str) -> str:
@@ -327,7 +355,10 @@ class ImageCaptioner:
             "subject_y2": None,
             "element_type": None,
             "horizon_y": None,
+            "horizon_type": None,
+            "horizon_valid": False,
             "people_centers": None,
+            "crop_hint": None,
         }
 
         for line in raw.splitlines():
@@ -382,10 +413,24 @@ class ImageCaptioner:
 
             elif upper.startswith("HORIZON:"):
                 if "NONE" not in upper:
+                    # Parse combined format: "55%, coastline, YES"
                     nums = re.findall(r"(\d+(?:\.\d+)?)", stripped)
                     if nums:
                         hy = max(0.0, min(1.0, float(nums[0]) / 100))
                         result["horizon_y"] = hy
+                    horizon_lower = stripped.lower()
+                    valid_types = {"skyline", "coastline", "treeline", "mountain_ridge", "roofline"}
+                    for ht in valid_types:
+                        if ht in horizon_lower:
+                            result["horizon_type"] = ht
+                            break
+                    # Check for YES after the type
+                    parts = stripped.split(",")
+                    if len(parts) >= 3 and "YES" in parts[-1].upper():
+                        result["horizon_valid"] = True
+
+            elif upper.startswith("CROP_HINT:"):
+                result["crop_hint"] = stripped[len("CROP_HINT:"):].strip()
 
         return result
 

@@ -27,6 +27,13 @@ export async function getProject(projectId: string): Promise<ProjectInfo> {
   return request(`/project/${projectId}`);
 }
 
+export async function getActiveProject(): Promise<ProjectInfo | null> {
+  const res = await fetch(BASE + "/project/active");
+  if (!res.ok || res.status === 204) return null;
+  const data = await res.json();
+  return data || null;
+}
+
 export async function updateConfig(
   projectId: string,
   config: ProjectConfig
