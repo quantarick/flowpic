@@ -239,8 +239,29 @@ def run_pipeline(
         _save_cache(proj_dir, "location_groups", location_groups)
         _save_cache(proj_dir, "merged_emotions", segment_emotions)
 
-    # === Step 4.75: Review person crops (skipped — captioning prompt handles composition) ===
-    _progress(TaskStatus.REVIEWING_CROPS, 40, "Skipping crop review", "Using captioner composition data")
+    # === Step 4.75: Review person crops ===
+    if config.skip_crop_review:
+        logger.info("Skipping crop review (skip_crop_review=True)")
+        _progress(TaskStatus.REVIEWING_CROPS, 40, "Crop review skipped", "")
+    else:
+        _progress(TaskStatus.REVIEWING_CROPS, 36, "Reviewing crops", "Checking person visibility...")
+        _check_cancel()
+
+        from app.services.crop_reviewer import CropReviewer
+        reviewer = CropReviewer(model=config.vision_model)
+        person_count = sum(1 for ic in image_captions if ic.has_person)
+        if person_count > 0:
+            def review_progress(done, total):
+                pct = 36 + (done / total) * 4  # 36% to 40%
+                _progress(TaskStatus.REVIEWING_CROPS, pct, "Reviewing crops",
+                          f"{done}/{total} person images reviewed")
+                _check_cancel()
+
+            image_captions = reviewer.review_crops(
+                matches, image_captions, images_dir,
+                config.aspect_ratio, config.quality,
+                progress_callback=review_progress,
+            )
 
     # === Step 5: Render Video ===
     _progress(TaskStatus.RENDERING, 40, "Rendering video", "Generating Ken Burns frames...")
@@ -281,6 +302,317 @@ def run_pipeline(
 
     _progress(TaskStatus.DONE, 100, "Done", str(output_path))
     return str(output_path)
+
+
+def run_crop_only(
+    project_id: str,
+    task_id_arg: str,
+    config: ProjectConfig,
+    progress_callback: Callable[[ProgressMessage], None],
+    cancel_check: Callable[[], bool],
+):
+    """Run the pipeline through matching + crop review, then save cropped images only (no video)."""
+    import cv2
+
+    proj_dir = settings.data_dir / project_id
+    images_dir = proj_dir / "images"
+    image_paths = sorted(images_dir.glob("*"))
+    music_files = list(proj_dir.glob("music.*"))
+    audio_path = music_files[0]
+    output_dir = proj_dir / "output"
+    output_dir.mkdir(exist_ok=True)
+
+    _last_db_status = [None]
+
+    def _progress(status: TaskStatus, progress: float, step: str, detail: str = ""):
+        if status != _last_db_status[0]:
+            from app.services.task_db import update_task_status
+            update_task_status(task_id_arg, status)
+            _last_db_status[0] = status
+        progress_callback(ProgressMessage(
+            status=status, progress=progress,
+            current_step=step, detail=detail,
+        ))
+
+    def _check_cancel():
+        if cancel_check():
+            _progress(TaskStatus.CANCELLED, 0, "Cancelled")
+            raise RuntimeError("Task cancelled")
+
+    # === Step 1: Analyze Audio ===
+    audio_features = _load_single_cache(proj_dir, "audio_features", AudioFeatures)
+    if audio_features:
+        _progress(TaskStatus.ANALYZING_AUDIO, 8, "Audio analyzed (cached)",
+                  f"Tempo: {audio_features.tempo:.0f} BPM, {len(audio_features.segments)} segments")
+    else:
+        _progress(TaskStatus.ANALYZING_AUDIO, 2, "Analyzing audio", "Extracting beats and features...")
+        _check_cancel()
+        from app.services.audio_analyzer import AudioAnalyzer
+        audio_features = AudioAnalyzer().analyze(audio_path)
+        _save_single_cache(proj_dir, "audio_features", audio_features)
+        _progress(TaskStatus.ANALYZING_AUDIO, 8, "Audio analyzed",
+                  f"Tempo: {audio_features.tempo:.0f} BPM, {len(audio_features.segments)} segments")
+
+    # === Step 2: Classify Emotion ===
+    segment_emotions = _load_cache(proj_dir, "segment_emotions", SegmentEmotion)
+    if segment_emotions:
+        _progress(TaskStatus.CLASSIFYING_EMOTION, 20, "Emotion classified (cached)")
+    else:
+        _progress(TaskStatus.CLASSIFYING_EMOTION, 10, "Classifying music emotion", "Running Music2Emo model...")
+        _check_cancel()
+        from app.services.emotion_classifier import EmotionClassifier
+        try:
+            segment_emotions = EmotionClassifier().classify(audio_path, audio_features)
+        except Exception as e:
+            logger.warning(f"Music2Emo failed, using fallback: {e}")
+            segment_emotions = _fallback_emotions(audio_features)
+
+        if settings.lyrics_enabled:
+            _check_cancel()
+            lyric_emotions = _run_lyrics_pipeline(audio_path, audio_features, proj_dir, _progress, _check_cancel)
+            if lyric_emotions:
+                from app.services.emotion_classifier import EmotionClassifier as EC
+                segment_emotions = EC.enrich_with_lyrics(segment_emotions, lyric_emotions)
+
+        _save_cache(proj_dir, "segment_emotions", segment_emotions)
+        _progress(TaskStatus.CLASSIFYING_EMOTION, 20, "Emotion classified")
+
+    # === Step 3: Caption Images ===
+    _progress(TaskStatus.CAPTIONING_IMAGES, 22, "Captioning images", f"0/{len(image_paths)} images...")
+    _check_cancel()
+    from app.services.image_captioner import ImageCaptioner
+    captioner = ImageCaptioner(model=config.vision_model)
+
+    def caption_progress(done, total):
+        pct = 22 + (done / total) * 20
+        _progress(TaskStatus.CAPTIONING_IMAGES, pct, "Captioning images", f"{done}/{total} images captioned")
+        _check_cancel()
+
+    image_captions = captioner.caption_images(image_paths, progress_callback=caption_progress)
+    _progress(TaskStatus.CAPTIONING_IMAGES, 42, "Images captioned", f"{len(image_captions)} captions generated")
+
+    # === Step 3.5: Deduplicate ===
+    image_captions = _deduplicate_images(image_captions, images_dir)
+
+    # === Step 3.6: Drop uncropable close-ups ===
+    from app.services.smart_crop import check_face_fits, get_output_resolution
+    out_w, out_h = get_output_resolution(config.aspect_ratio, config.quality)
+    before_closeup = len(image_captions)
+    image_captions = [
+        ic for ic in image_captions
+        if not ic.face_regions or not ic.img_width
+        or check_face_fits(ic.img_width, ic.img_height, ic.face_regions, out_w, out_h)
+    ]
+    dropped = before_closeup - len(image_captions)
+    if dropped:
+        logger.info(f"Dropped {dropped} close-up images that can't be properly cropped")
+
+    # === Step 4: Semantic Matching ===
+    matches = _load_cache(proj_dir, "matches", MatchResult)
+    location_groups = _load_cache(proj_dir, "location_groups", LocationGroup)
+    merged_emotions = _load_cache(proj_dir, "merged_emotions", SegmentEmotion)
+    if matches and location_groups is not None and merged_emotions:
+        segment_emotions = merged_emotions
+        _progress(TaskStatus.MATCHING, 55, "Matching complete (cached)", f"{len(matches)} pairs")
+    else:
+        _progress(TaskStatus.MATCHING, 45, "Matching images to music", "Computing semantic similarity...")
+        _check_cancel()
+        from app.services.matcher import SemanticMatcher
+        matches, segment_emotions = SemanticMatcher().match(
+            segment_emotions, image_captions, audio_features, images_dir=images_dir,
+        )
+        matches = _cluster_matches_by_location(matches, image_captions)
+        location_groups = _compute_location_groups(matches, image_captions)
+        _persist_clip_embeddings(proj_dir, image_captions)
+        _save_cache(proj_dir, "matches", matches)
+        _save_cache(proj_dir, "location_groups", location_groups)
+        _save_cache(proj_dir, "merged_emotions", segment_emotions)
+        _progress(TaskStatus.MATCHING, 55, "Matching complete", f"{len(matches)} pairs")
+
+    # === Step 5: Crop Review ===
+    if config.skip_crop_review:
+        _progress(TaskStatus.REVIEWING_CROPS, 60, "Crop review skipped")
+    else:
+        _progress(TaskStatus.REVIEWING_CROPS, 56, "Reviewing crops", "Checking person visibility...")
+        _check_cancel()
+        from app.services.crop_reviewer import CropReviewer
+        person_count = sum(1 for ic in image_captions if ic.has_person)
+        if person_count > 0:
+            def review_progress(done, total):
+                pct = 56 + (done / total) * 4
+                _progress(TaskStatus.REVIEWING_CROPS, pct, "Reviewing crops",
+                          f"{done}/{total} person images reviewed")
+                _check_cancel()
+            image_captions = CropReviewer(model=config.vision_model).review_crops(
+                matches, image_captions, images_dir,
+                config.aspect_ratio, config.quality,
+                progress_callback=review_progress,
+            )
+
+    # === Step 6: Save cropped images (no video rendering) ===
+    _progress(TaskStatus.RENDERING, 65, "Generating crops", "Saving cropped images...")
+    from app.services.smart_crop import smart_fit
+    caption_map = {ic.filename: ic for ic in image_captions}
+    crops_dir = output_dir / "crops"
+    crops_dir.mkdir(parents=True, exist_ok=True)
+
+    for i, match in enumerate(matches):
+        img_path = images_dir / match.image_filename
+        img = cv2.imread(str(img_path))
+        if img is None:
+            continue
+
+        cap = caption_map.get(match.image_filename)
+        face_regions = cap.face_regions if cap else []
+        focus_x = cap.focus_x if cap else 0.5
+        focus_y = cap.focus_y if cap else 0.5
+        fit_mode = cap.fit_mode if cap else "crop"
+        subject_box = None
+        if cap and cap.subject_x1 is not None:
+            subject_box = (cap.subject_x1, cap.subject_y1, cap.subject_x2, cap.subject_y2)
+
+        result = smart_fit(
+            img, out_w, out_h,
+            face_regions=face_regions,
+            focus_x=focus_x, focus_y=focus_y,
+            scale_factor=1.0, fit_mode=fit_mode,
+            subject_box=subject_box,
+            horizon_y=cap.horizon_y if cap else None,
+            people_centers=cap.people_centers if cap else None,
+        )
+
+        stem = Path(match.image_filename).stem
+        cv2.imwrite(str(crops_dir / f"{i:03d}_{stem}_{fit_mode}.jpg"), result.canvas)
+        pct = 65 + ((i + 1) / len(matches)) * 30
+        _progress(TaskStatus.RENDERING, pct, "Generating crops",
+                  f"{i + 1}/{len(matches)} images cropped")
+
+    crops_path = str(crops_dir)
+    _progress(TaskStatus.DONE, 100, "Done", crops_path)
+    return crops_path
+
+
+def run_crop_preview(
+    project_id: str,
+    task_id_arg: str,
+    config: ProjectConfig,
+    progress_callback: Callable[[ProgressMessage], None],
+    cancel_check: Callable[[], bool],
+):
+    """Caption images and save crops without any audio/music dependency."""
+    import cv2
+
+    proj_dir = settings.data_dir / project_id
+    images_dir = proj_dir / "images"
+    image_paths = sorted(images_dir.glob("*"))
+    output_dir = proj_dir / "output"
+    output_dir.mkdir(exist_ok=True)
+
+    _last_db_status = [None]
+
+    def _progress(status: TaskStatus, progress: float, step: str, detail: str = ""):
+        if status != _last_db_status[0]:
+            from app.services.task_db import update_task_status
+            update_task_status(task_id_arg, status)
+            _last_db_status[0] = status
+        progress_callback(ProgressMessage(
+            status=status, progress=progress,
+            current_step=step, detail=detail,
+        ))
+
+    def _check_cancel():
+        if cancel_check():
+            _progress(TaskStatus.CANCELLED, 0, "Cancelled")
+            raise RuntimeError("Task cancelled")
+
+    # === Step 1: Caption Images ===
+    _progress(TaskStatus.CAPTIONING_IMAGES, 5, "Captioning images", f"0/{len(image_paths)} images...")
+    _check_cancel()
+    from app.services.image_captioner import ImageCaptioner
+    captioner = ImageCaptioner(model=config.vision_model)
+
+    def caption_progress(done, total):
+        pct = 5 + (done / total) * 40
+        _progress(TaskStatus.CAPTIONING_IMAGES, pct, "Captioning images", f"{done}/{total} images captioned")
+        _check_cancel()
+
+    image_captions = captioner.caption_images(image_paths, progress_callback=caption_progress)
+    _progress(TaskStatus.CAPTIONING_IMAGES, 45, "Images captioned", f"{len(image_captions)} captions generated")
+
+    # === Step 2: Deduplicate ===
+    image_captions = _deduplicate_images(image_captions, images_dir)
+
+    # === Step 3: Drop uncropable close-ups ===
+    from app.services.smart_crop import check_face_fits, get_output_resolution
+    out_w, out_h = get_output_resolution(config.aspect_ratio, config.quality)
+    before_closeup = len(image_captions)
+    image_captions = [
+        ic for ic in image_captions
+        if not ic.face_regions or not ic.img_width
+        or check_face_fits(ic.img_width, ic.img_height, ic.face_regions, out_w, out_h)
+    ]
+    dropped = before_closeup - len(image_captions)
+    if dropped:
+        logger.info(f"Dropped {dropped} close-up images that can't be properly cropped")
+
+    # === Step 4: Crop Review (optional) ===
+    if not config.skip_crop_review:
+        _progress(TaskStatus.REVIEWING_CROPS, 50, "Reviewing crops", "Checking person visibility...")
+        _check_cancel()
+        person_count = sum(1 for ic in image_captions if ic.has_person)
+        if person_count > 0:
+            from app.services.crop_reviewer import CropReviewer
+
+            def review_progress(done, total):
+                pct = 50 + (done / total) * 10
+                _progress(TaskStatus.REVIEWING_CROPS, pct, "Reviewing crops",
+                          f"{done}/{total} person images reviewed")
+                _check_cancel()
+
+            image_captions = CropReviewer(model=config.vision_model).review_crops(
+                # No matches — pass dummy matches for all images
+                [MatchResult(segment_index=i, image_filename=ic.filename, similarity_score=1.0)
+                 for i, ic in enumerate(image_captions)],
+                image_captions, images_dir,
+                config.aspect_ratio, config.quality,
+                progress_callback=review_progress,
+            )
+
+    # === Step 5: Save cropped images ===
+    _progress(TaskStatus.RENDERING, 65, "Generating crops", "Saving cropped images...")
+    from app.services.smart_crop import smart_fit
+    crops_dir = output_dir / "crops"
+    crops_dir.mkdir(parents=True, exist_ok=True)
+
+    for i, cap in enumerate(image_captions):
+        img_path = images_dir / cap.filename
+        img = cv2.imread(str(img_path))
+        if img is None:
+            continue
+
+        subject_box = None
+        if cap.subject_x1 is not None:
+            subject_box = (cap.subject_x1, cap.subject_y1, cap.subject_x2, cap.subject_y2)
+
+        result = smart_fit(
+            img, out_w, out_h,
+            face_regions=cap.face_regions,
+            focus_x=cap.focus_x, focus_y=cap.focus_y,
+            scale_factor=1.0, fit_mode=cap.fit_mode,
+            subject_box=subject_box,
+            horizon_y=cap.horizon_y,
+            people_centers=cap.people_centers,
+        )
+
+        stem = Path(cap.filename).stem
+        cv2.imwrite(str(crops_dir / f"{i:03d}_{stem}_{cap.fit_mode}.jpg"), result.canvas)
+        pct = 65 + ((i + 1) / len(image_captions)) * 30
+        _progress(TaskStatus.RENDERING, pct, "Generating crops",
+                  f"{i + 1}/{len(image_captions)} images cropped")
+
+    crops_path = str(crops_dir)
+    _progress(TaskStatus.DONE, 100, "Done", crops_path)
+    return crops_path
 
 
 def _run_lyrics_pipeline(

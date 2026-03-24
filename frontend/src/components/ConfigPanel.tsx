@@ -3,13 +3,16 @@ import { useI18n } from "../i18n";
 import { fetchOllamaModels } from "../api/client";
 import type { AspectRatio, OllamaModel, ProjectConfig, Quality } from "../types";
 
+type ConfigField = "aspect_ratio" | "quality" | "vision_model" | "fps";
+
 interface Props {
   config: ProjectConfig;
   onChange: (updates: Partial<ProjectConfig>) => void;
   disabled?: boolean;
+  fields?: ConfigField[];
 }
 
-export function ConfigPanel({ config, onChange, disabled }: Props) {
+export function ConfigPanel({ config, onChange, disabled, fields }: Props) {
   const { t } = useI18n();
   const [models, setModels] = useState<OllamaModel[]>([]);
   const [defaultModel, setDefaultModel] = useState<string>("moondream");
@@ -21,10 +24,11 @@ export function ConfigPanel({ config, onChange, disabled }: Props) {
         setDefaultModel(res.default);
       })
       .catch(() => {
-        // Fallback: just show the default
         setModels([{ name: "moondream", size: null, parameter_size: null }]);
       });
   }, []);
+
+  const show = (f: ConfigField) => !fields || fields.includes(f);
 
   const ASPECT_RATIOS: { value: AspectRatio; label: string }[] = [
     { value: "16:9", label: t.arLandscape },
@@ -59,73 +63,81 @@ export function ConfigPanel({ config, onChange, disabled }: Props) {
         alignItems: "center",
       }}
     >
-      <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
-        {t.cfgAspectRatio}
-        <select
-          value={config.aspect_ratio}
-          onChange={(e) =>
-            onChange({ aspect_ratio: e.target.value as AspectRatio })
-          }
-          disabled={disabled}
-          style={selectStyle}
-        >
-          {ASPECT_RATIOS.map((ar) => (
-            <option key={ar.value} value={ar.value}>
-              {ar.label}
-            </option>
-          ))}
-        </select>
-      </label>
+      {show("aspect_ratio") && (
+        <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {t.cfgAspectRatio}
+          <select
+            value={config.aspect_ratio}
+            onChange={(e) =>
+              onChange({ aspect_ratio: e.target.value as AspectRatio })
+            }
+            disabled={disabled}
+            style={selectStyle}
+          >
+            {ASPECT_RATIOS.map((ar) => (
+              <option key={ar.value} value={ar.value}>
+                {ar.label}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
 
-      <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
-        {t.cfgQuality}
-        <select
-          value={config.quality}
-          onChange={(e) => onChange({ quality: e.target.value as Quality })}
-          disabled={disabled}
-          style={selectStyle}
-        >
-          {QUALITIES.map((q) => (
-            <option key={q.value} value={q.value}>
-              {q.label}
-            </option>
-          ))}
-        </select>
-      </label>
+      {show("quality") && (
+        <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {t.cfgQuality}
+          <select
+            value={config.quality}
+            onChange={(e) => onChange({ quality: e.target.value as Quality })}
+            disabled={disabled}
+            style={selectStyle}
+          >
+            {QUALITIES.map((q) => (
+              <option key={q.value} value={q.value}>
+                {q.label}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
 
-      <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
-        {t.cfgVisionModel}
-        <select
-          value={selectedModel}
-          onChange={(e) => {
-            const val = e.target.value;
-            onChange({ vision_model: val === defaultModel ? null : val });
-          }}
-          disabled={disabled}
-          style={selectStyle}
-        >
-          {models.map((m) => (
-            <option key={m.name} value={m.name}>
-              {m.name}
-              {m.parameter_size ? ` (${m.parameter_size})` : formatSize(m.size)}
-              {m.name === defaultModel ? " *" : ""}
-            </option>
-          ))}
-        </select>
-      </label>
+      {show("vision_model") && (
+        <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {t.cfgVisionModel}
+          <select
+            value={selectedModel}
+            onChange={(e) => {
+              const val = e.target.value;
+              onChange({ vision_model: val === defaultModel ? null : val });
+            }}
+            disabled={disabled}
+            style={selectStyle}
+          >
+            {models.map((m) => (
+              <option key={m.name} value={m.name}>
+                {m.name}
+                {m.parameter_size ? ` (${m.parameter_size})` : formatSize(m.size)}
+                {m.name === defaultModel ? " *" : ""}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
 
-      <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
-        {t.cfgFps}
-        <input
-          type="number"
-          min={15}
-          max={60}
-          value={config.fps}
-          onChange={(e) => onChange({ fps: Number(e.target.value) })}
-          disabled={disabled}
-          style={{ ...selectStyle, width: 60 }}
-        />
-      </label>
+      {show("fps") && (
+        <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {t.cfgFps}
+          <input
+            type="number"
+            min={15}
+            max={60}
+            value={config.fps}
+            onChange={(e) => onChange({ fps: Number(e.target.value) })}
+            disabled={disabled}
+            style={{ ...selectStyle, width: 60 }}
+          />
+        </label>
+      )}
     </div>
   );
 }

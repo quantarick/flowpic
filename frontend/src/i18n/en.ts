@@ -2,10 +2,13 @@ const en = {
   // App
   appTitle: "FlowPic",
   appTagline: "Music-driven photo slideshow generator",
-  sectionImages: "1. Upload Images",
-  sectionMusic: "2. Upload Music",
-  sectionConfig: "3. Configure",
+  sectionImages: "Upload Images",
+  sectionMusic: "Upload Music",
+  sectionConfig: "Configure",
   sectionResult: "Result",
+  tabCrops: "Crops",
+  tabVideo: "Video",
+  hintPreviewCrops: "Tip: Preview crops first in the Crops tab to review framing before generating.",
 
   // ImageUploader
   imgDropHint: "Drop images here or click to browse",
@@ -37,6 +40,12 @@ const en = {
   // GenerateButton
   btnStarting: "Starting...",
   btnGenerate: "Generate Video",
+  btnCropPreview: "Preview Crops",
+
+  // CropPreview
+  cropPreviewTitle: "Crop Preview",
+  cropLoading: "Loading crops...",
+  cropEmpty: "No crops generated yet",
 
   // ProgressBar
   stepPending: "Queued...",

@@ -38,6 +38,7 @@ const defaultConfig: ProjectConfig = {
   quality: "720p",
   fps: 30,
   vision_model: null,
+  skip_crop_review: true,
 };
 
 export function useProject() {
@@ -224,6 +225,27 @@ export function useProject() {
     }
   }, [state.projectId, state.config]);
 
+  const cropPreview = useCallback(async () => {
+    if (!state.projectId) return;
+    setState((s) => ({ ...s, loading: true, error: null, videoUrl: null }));
+    try {
+      await api.updateConfig(state.projectId, state.config);
+      const { task_id } = await api.cropPreview(state.projectId);
+      setState((s) => ({
+        ...s,
+        taskId: task_id,
+        status: "pending",
+        loading: false,
+      }));
+    } catch (e) {
+      setState((s) => ({
+        ...s,
+        loading: false,
+        error: (e as Error).message,
+      }));
+    }
+  }, [state.projectId, state.config]);
+
   const setStatus = useCallback((status: TaskStatus) => {
     setState((s) => {
       const updated = { ...s, status };
@@ -266,6 +288,7 @@ export function useProject() {
     uploadMusic,
     updateConfig,
     generate,
+    cropPreview,
     setStatus,
     setDone,
     setTaskId,

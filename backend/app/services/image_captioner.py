@@ -276,7 +276,7 @@ class ImageCaptioner:
     # --- LLM ---
 
     # Models that only support /api/generate (not /api/chat)
-    _generate_only_models = {"moondream"}
+    _generate_only_models = {"moondream", "qwen2.5vl"}
 
     _default_info = {
         "caption": "A photograph with various visual elements.",

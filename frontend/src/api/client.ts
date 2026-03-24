@@ -96,3 +96,19 @@ export async function retryTask(taskId: string): Promise<GenerateResponse> {
 export async function fetchOllamaModels(): Promise<OllamaModelsResponse> {
   return request("/ollama/models");
 }
+
+export async function cropPreview(
+  projectId: string
+): Promise<GenerateResponse> {
+  return request(`/generate/${projectId}/crop-preview`, { method: "POST" });
+}
+
+export async function listCrops(
+  projectId: string
+): Promise<{ project_id: string; crops: string[] }> {
+  return request(`/crops/${projectId}`);
+}
+
+export function getCropUrl(projectId: string, filename: string): string {
+  return `${BASE}/crops/${projectId}/${filename}`;
+}

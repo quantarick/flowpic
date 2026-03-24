@@ -47,6 +47,7 @@ class ProjectConfig(BaseModel):
     quality: Quality = Quality.SD
     fps: int = Field(default=30, ge=15, le=60)
     vision_model: Optional[str] = None  # Ollama model override; None = use server default
+    skip_crop_review: bool = True
 
 
 class ProjectCreateResponse(BaseModel):

@@ -23,3 +23,22 @@ async def download_video(task_id: str):
             )
 
     raise HTTPException(404, "Video not found")
+
+
+@router.get("/crops/{project_id}")
+async def list_crops(project_id: str):
+    """List cropped preview images for a project."""
+    crops_dir = settings.data_dir / project_id / "output" / "crops"
+    if not crops_dir.exists():
+        raise HTTPException(404, "No crops found")
+    files = sorted(f.name for f in crops_dir.glob("*.jpg"))
+    return {"project_id": project_id, "crops": files}
+
+
+@router.get("/crops/{project_id}/{filename}")
+async def get_crop(project_id: str, filename: str):
+    """Serve a single cropped image."""
+    crop_path = settings.data_dir / project_id / "output" / "crops" / filename
+    if not crop_path.exists():
+        raise HTTPException(404, "Crop not found")
+    return FileResponse(path=str(crop_path), media_type="image/jpeg")

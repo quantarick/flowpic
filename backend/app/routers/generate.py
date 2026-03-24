@@ -60,6 +60,49 @@ async def generate_video(
     return GenerateResponse(task_id=task_id)
 
 
+@router.post("/generate/{project_id}/crop-preview", response_model=GenerateResponse)
+async def crop_preview(
+    project_id: str,
+    tm: TaskManager = Depends(get_task_manager),
+):
+    """Caption images and save crops for review (no music required)."""
+    proj_dir = settings.data_dir / project_id
+    if not proj_dir.exists():
+        raise HTTPException(404, "Project not found")
+
+    images_dir = proj_dir / "images"
+    images = sorted(images_dir.glob("*")) if images_dir.exists() else []
+    if len(images) < 2:
+        raise HTTPException(400, "Need at least 2 images")
+
+    meta_path = proj_dir / "meta.json"
+    config = ProjectConfig()
+    if meta_path.exists():
+        meta = json.loads(meta_path.read_text())
+        config = ProjectConfig(**meta.get("config", {}))
+
+    task_id = uuid.uuid4().hex[:16]
+
+    from app.services.task_db import save_task
+    save_task(TaskRecord(
+        task_id=task_id,
+        project_id=project_id,
+        image_count=len(images),
+        config=config,
+    ))
+
+    from app.workers.video_worker import run_crop_preview
+    tm.submit(
+        task_id=task_id,
+        fn=run_crop_preview,
+        project_id=project_id,
+        task_id_arg=task_id,
+        config=config,
+    )
+
+    return GenerateResponse(task_id=task_id)
+
+
 @router.get("/tasks")
 async def list_tasks(limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0)):
     """List task history, most recent first."""

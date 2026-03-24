@@ -19,6 +19,7 @@ export interface ProjectConfig {
   quality: Quality;
   fps: number;
   vision_model: string | null;
+  skip_crop_review: boolean;
 }
 
 export interface OllamaModel {

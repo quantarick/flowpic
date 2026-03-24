@@ -4,10 +4,13 @@ const zh: Translations = {
   // App
   appTitle: "FlowPic",
   appTagline: "AI 音乐驱动照片视频生成器",
-  sectionImages: "1. 上传图片",
-  sectionMusic: "2. 上传音乐",
-  sectionConfig: "3. 参数设置",
+  sectionImages: "上传图片",
+  sectionMusic: "上传音乐",
+  sectionConfig: "参数设置",
   sectionResult: "生成结果",
+  tabCrops: "裁剪",
+  tabVideo: "视频",
+  hintPreviewCrops: "提示：可先在「裁剪」标签页预览构图，确认无误后再生成视频。",
 
   // ImageUploader
   imgDropHint: "拖拽图片到此处，或点击选择文件",
@@ -39,6 +42,12 @@ const zh: Translations = {
   // GenerateButton
   btnStarting: "启动中...",
   btnGenerate: "生成视频",
+  btnCropPreview: "预览裁剪",
+
+  // CropPreview
+  cropPreviewTitle: "裁剪预览",
+  cropLoading: "加载中...",
+  cropEmpty: "暂无裁剪结果",
 
   // ProgressBar
   stepPending: "排队中...",
