@@ -19,48 +19,72 @@ from app.models import FaceRegion, ImageCaption
 
 BASE_PROMPT = (
     "Analyze this image for cinematic cropping. Output ONLY plain text lines, NO markdown.\n\n"
+    "IMPORTANT RULES:\n"
+    "- The SUBJECT is the most visually prominent element — a tree, rock, animal, person, or building.\n"
+    "  It is NOT the background scenery. A lone tree on a hillside is the subject, not the ocean behind it.\n"
+    "- FOREGROUND ANCHORS (trees, rocks, grass, animals in the near field) are compositionally critical.\n"
+    "  Always include them in BOUNDS even if they are at the edge of the frame.\n"
+    "- If birds or animals are the most eye-catching element, ELEMENT must be 'animal', not 'landscape'.\n"
+    "- HORIZON type: use 'coastline' when ocean meets land, 'treeline' when trees meet sky,\n"
+    "  'roofline' when buildings meet sky, 'mountain_ridge' for mountain edges. 'skyline' is ONLY for\n"
+    "  flat ocean-meets-sky with no land features.\n"
+    "- For dramatic/colorful skies (sunset, storm clouds), the sky IS part of the subject — do NOT crop it.\n"
+    "  For plain blue sky with no features, crop aggressively.\n\n"
     "First describe what is at each edge, then analyze the full image.\n"
     "TOP: what is at the top 10%\n"
     "BOTTOM: what is at the bottom 10%\n"
     "LEFT: what is at the left 10%\n"
     "RIGHT: what is at the right 10%\n"
-    "CAPTION: 2-3 sentences on scene, mood, light\n"
+    "CAPTION: 2-3 specific sentences (name what you see: species, objects, terrain — not 'a beautiful scene')\n"
     "ELEMENT: person/animal/landscape/architecture/object/other\n"
-    "SUBJECT: x%, y% (measure the ACTUAL position of the main subject — do NOT default to 50%,50%)\n"
-    "BOUNDS: x1%, y1%, x2%, y2% (use your edge analysis! If TOP has content like trees/buildings, "
-    "y1 must be 0%. If BOTTOM has content like beach/ground, y2 must be 100%. "
-    "Only exclude edges that are EMPTY sky or plain water. "
-    "If a person is visible, BOUNDS MUST include their full body head to toe)\n"
+    "SUBJECT: x%, y% (center of the MAIN VISUAL ELEMENT, not the background. Measure precisely.)\n"
+    "BOUNDS: x1%, y1%, x2%, y2% (the rectangle that contains ALL important content.\n"
+    "  MUST include foreground anchors like trees, rocks, grass, animals.\n"
+    "  Only exclude edges that are EMPTY plain sky or featureless water.\n"
+    "  If a person is visible, BOUNDS MUST include their full body head to toe)\n"
     "PERSON: YES/NO\n"
     "PEOPLE: count, x%,y% per person (0 if none)\n"
-    "HORIZON: y%, type, valid (type=skyline/coastline/treeline/mountain/none; valid=yes/no)\n"
-    "CROP_HINT: what to keep, what to cut, and desired sky-land balance\n\n"
-    "Example for a palm tree silhouette with sunset and misty hills:\n"
-    "TOP: golden sky with clouds\n"
-    "BOTTOM: dark fern leaves and vegetation\n"
-    "LEFT: tall palm tree trunk from bottom to top\n"
-    "RIGHT: misty valley with distant trees\n"
-    "CAPTION: Silhouetted palm tree against golden sunset over misty hills.\n"
+    "HORIZON: y%, type, valid (type=skyline/coastline/treeline/mountain_ridge/roofline/none; valid=yes/no)\n"
+    "CROP_HINT: name the foreground anchor to keep, what to cut, and desired sky-land balance\n\n"
+    "Example 1 — lone tree as foreground anchor with bay backdrop:\n"
+    "TOP: clear blue sky with scattered clouds\n"
+    "BOTTOM: green grass hillside with resting cows\n"
+    "LEFT: green pasture slope\n"
+    "RIGHT: blue bay water, distant headland\n"
+    "CAPTION: Large pohutukawa tree on green hillside with cows resting in shade, blue bay stretching to headland.\n"
     "ELEMENT: landscape\n"
-    "SUBJECT: 28%, 35%\n"
+    "SUBJECT: 50%, 55%\n"
+    "BOUNDS: 20%, 10%, 85%, 95%\n"
+    "PERSON: NO\n"
+    "PEOPLE: 0\n"
+    "HORIZON: 35%, coastline, yes\n"
+    "CROP_HINT: tree is the hero element, cows add life underneath, keep bay and headland, cut plain sky\n\n"
+    "Example 2 — seagulls on beach with rock formation:\n"
+    "TOP: plain blue sky\n"
+    "BOTTOM: wet sand beach with seagull reflections\n"
+    "LEFT: beach sand and small waves\n"
+    "RIGHT: turquoise water near rock\n"
+    "CAPTION: Seagulls on sandy beach with rocky sea stack in mid-ground, turquoise waves breaking.\n"
+    "ELEMENT: animal\n"
+    "SUBJECT: 55%, 55%\n"
+    "BOUNDS: 15%, 10%, 85%, 100%\n"
+    "PERSON: NO\n"
+    "PEOPLE: 0\n"
+    "HORIZON: 28%, coastline, yes\n"
+    "CROP_HINT: rock formation is focal point, seagulls add foreground interest at lower third, keep beach\n\n"
+    "Example 3 — dramatic sunset sky (sky IS the subject):\n"
+    "TOP: deep orange and pink cloud streaks\n"
+    "BOTTOM: dark silhouetted rooftops and trees\n"
+    "LEFT: orange sky glow\n"
+    "RIGHT: pink-purple cloud wisps\n"
+    "CAPTION: Dramatic sunset with orange and pink streaks radiating from horizon, silhouetted pine tree and rooftops.\n"
+    "ELEMENT: landscape\n"
+    "SUBJECT: 55%, 35%\n"
     "BOUNDS: 0%, 0%, 100%, 100%\n"
     "PERSON: NO\n"
     "PEOPLE: 0\n"
-    "HORIZON: 60%, treeline, yes\n"
-    "CROP_HINT: keep full palm tree, center on horizon glow, balance sky and land equally\n\n"
-    "Example for island rock at bottom-right with too much empty sky:\n"
-    "TOP: plain blue sky\n"
-    "BOTTOM: turquoise water, rocky coastline with grass\n"
-    "LEFT: open ocean\n"
-    "RIGHT: rocky island formation with vegetation\n"
-    "CAPTION: Rocky island in turquoise sea under clear sky.\n"
-    "ELEMENT: landscape\n"
-    "SUBJECT: 75%, 72%\n"
-    "BOUNDS: 0%, 40%, 100%, 100%\n"
-    "PERSON: NO\n"
-    "PEOPLE: 0\n"
-    "HORIZON: 38%, skyline, yes\n"
-    "CROP_HINT: cut sky above 30%, keep full island and coastline, 40/60 sky-land ratio\n\n"
+    "HORIZON: 70%, roofline, yes\n"
+    "CROP_HINT: sky IS the subject — do NOT crop any sky, keep full color display with silhouette base\n\n"
     "Now analyze the image:"
 )
 
@@ -194,8 +218,11 @@ class ImageCaptioner:
             place_name=place_name,
         )
 
-        # Cache result
-        cache_file.write_text(result.model_dump_json(), encoding="utf-8")
+        # Cache result (skip if Ollama returned an error)
+        if not info.get("_error"):
+            cache_file.write_text(result.model_dump_json(), encoding="utf-8")
+        else:
+            logger.warning(f"Skipping cache for {image_path.name} due to Ollama error")
         return result
 
     def caption_images(
@@ -310,7 +337,7 @@ class ImageCaptioner:
             return dict(self._default_info)
         except Exception as e:
             logger.warning(f"Ollama error: {e}")
-            return {**self._default_info, "caption": f"An image. (Caption unavailable: {e})"}
+            return {**self._default_info, "caption": f"An image. (Caption unavailable: {e})", "_error": True}
 
     def _ollama_generate(self, client: httpx.Client, image_b64: str, prompt: str) -> str:
         """Call /api/generate (moondream and similar models)."""

@@ -482,7 +482,7 @@ def run_crop_only(
         )
 
         stem = Path(match.image_filename).stem
-        cv2.imwrite(str(crops_dir / f"{i:03d}_{stem}_{fit_mode}.jpg"), result.canvas)
+        cv2.imwrite(str(crops_dir / f"{i:03d}_{stem}_{fit_mode}.png"), result.canvas)
         pct = 65 + ((i + 1) / len(matches)) * 30
         _progress(TaskStatus.RENDERING, pct, "Generating crops",
                   f"{i + 1}/{len(matches)} images cropped")
@@ -525,90 +525,87 @@ def run_crop_preview(
             _progress(TaskStatus.CANCELLED, 0, "Cancelled")
             raise RuntimeError("Task cancelled")
 
-    # === Step 1: Caption Images ===
-    _progress(TaskStatus.CAPTIONING_IMAGES, 5, "Captioning images", f"0/{len(image_paths)} images...")
-    _check_cancel()
+    # === Interleaved captioning (GPU) + cropping (CPU) ===
+    from queue import Queue
+    from threading import Thread
     from app.services.image_captioner import ImageCaptioner
+    from app.services.smart_crop import smart_fit, check_face_fits, get_output_resolution
+
     captioner = ImageCaptioner(model=config.vision_model)
-
-    def caption_progress(done, total):
-        pct = 5 + (done / total) * 40
-        _progress(TaskStatus.CAPTIONING_IMAGES, pct, "Captioning images", f"{done}/{total} images captioned")
-        _check_cancel()
-
-    image_captions = captioner.caption_images(image_paths, progress_callback=caption_progress)
-    _progress(TaskStatus.CAPTIONING_IMAGES, 45, "Images captioned", f"{len(image_captions)} captions generated")
-
-    # === Step 2: Deduplicate ===
-    image_captions = _deduplicate_images(image_captions, images_dir)
-
-    # === Step 3: Drop uncropable close-ups ===
-    from app.services.smart_crop import check_face_fits, get_output_resolution
     out_w, out_h = get_output_resolution(config.aspect_ratio, config.quality)
-    before_closeup = len(image_captions)
-    image_captions = [
-        ic for ic in image_captions
-        if not ic.face_regions or not ic.img_width
-        or check_face_fits(ic.img_width, ic.img_height, ic.face_regions, out_w, out_h)
-    ]
-    dropped = before_closeup - len(image_captions)
-    if dropped:
-        logger.info(f"Dropped {dropped} close-up images that can't be properly cropped")
-
-    # === Step 4: Crop Review (optional) ===
-    if not config.skip_crop_review:
-        _progress(TaskStatus.REVIEWING_CROPS, 50, "Reviewing crops", "Checking person visibility...")
-        _check_cancel()
-        person_count = sum(1 for ic in image_captions if ic.has_person)
-        if person_count > 0:
-            from app.services.crop_reviewer import CropReviewer
-
-            def review_progress(done, total):
-                pct = 50 + (done / total) * 10
-                _progress(TaskStatus.REVIEWING_CROPS, pct, "Reviewing crops",
-                          f"{done}/{total} person images reviewed")
-                _check_cancel()
-
-            image_captions = CropReviewer(model=config.vision_model).review_crops(
-                # No matches — pass dummy matches for all images
-                [MatchResult(segment_index=i, image_filename=ic.filename, similarity_score=1.0)
-                 for i, ic in enumerate(image_captions)],
-                image_captions, images_dir,
-                config.aspect_ratio, config.quality,
-                progress_callback=review_progress,
-            )
-
-    # === Step 5: Save cropped images ===
-    _progress(TaskStatus.RENDERING, 65, "Generating crops", "Saving cropped images...")
-    from app.services.smart_crop import smart_fit
     crops_dir = output_dir / "crops"
     crops_dir.mkdir(parents=True, exist_ok=True)
 
-    for i, cap in enumerate(image_captions):
-        img_path = images_dir / cap.filename
-        img = cv2.imread(str(img_path))
-        if img is None:
-            continue
+    total = len(image_paths)
+    caption_queue: Queue = Queue()  # (index, ImageCaption) or None as sentinel
+    captioned_count = [0]
+    cropped_count = [0]
 
-        subject_box = None
-        if cap.subject_x1 is not None:
-            subject_box = (cap.subject_x1, cap.subject_y1, cap.subject_x2, cap.subject_y2)
+    _progress(TaskStatus.CAPTIONING_IMAGES, 5, "Captioning & cropping",
+              f"0/{total} captioned, 0/{total} cropped")
 
-        result = smart_fit(
-            img, out_w, out_h,
-            face_regions=cap.face_regions,
-            focus_x=cap.focus_x, focus_y=cap.focus_y,
-            scale_factor=1.0, fit_mode=cap.fit_mode,
-            subject_box=subject_box,
-            horizon_y=cap.horizon_y,
-            people_centers=cap.people_centers,
-        )
+    def _caption_producer():
+        """Run on main thread — GPU-bound captioning pushes results to queue."""
+        for idx, path in enumerate(image_paths):
+            _check_cancel()
+            cap = captioner.caption_image(path)
+            caption_queue.put((idx, cap))
+            captioned_count[0] = idx + 1
+            pct = 5 + (captioned_count[0] / total) * 50
+            _progress(TaskStatus.CAPTIONING_IMAGES, pct, "Captioning & cropping",
+                      f"{captioned_count[0]}/{total} captioned, {cropped_count[0]}/{total} cropped")
+        caption_queue.put(None)  # sentinel
 
-        stem = Path(cap.filename).stem
-        cv2.imwrite(str(crops_dir / f"{i:03d}_{stem}_{cap.fit_mode}.jpg"), result.canvas)
-        pct = 65 + ((i + 1) / len(image_captions)) * 30
-        _progress(TaskStatus.RENDERING, pct, "Generating crops",
-                  f"{i + 1}/{len(image_captions)} images cropped")
+    def _crop_consumer():
+        """Run on background thread — CPU-bound cropping consumes from queue."""
+        while True:
+            item = caption_queue.get()
+            if item is None:
+                break
+            idx, cap = item
+
+            # Skip uncropable close-ups
+            if cap.face_regions and cap.img_width:
+                if not check_face_fits(cap.img_width, cap.img_height, cap.face_regions, out_w, out_h):
+                    logger.info(f"Skipping close-up: {cap.filename}")
+                    cropped_count[0] += 1
+                    continue
+
+            img = cv2.imread(str(images_dir / cap.filename))
+            if img is None:
+                cropped_count[0] += 1
+                continue
+
+            subject_box = None
+            if cap.subject_x1 is not None:
+                subject_box = (cap.subject_x1, cap.subject_y1, cap.subject_x2, cap.subject_y2)
+
+            result = smart_fit(
+                img, out_w, out_h,
+                face_regions=cap.face_regions,
+                focus_x=cap.focus_x, focus_y=cap.focus_y,
+                scale_factor=1.0, fit_mode=cap.fit_mode,
+                subject_box=subject_box,
+                horizon_y=cap.horizon_y,
+                people_centers=cap.people_centers,
+            )
+
+            stem = Path(cap.filename).stem
+            cv2.imwrite(str(crops_dir / f"{idx:03d}_{stem}_{cap.fit_mode}.png"), result.canvas)
+            cropped_count[0] += 1
+
+    # Start crop consumer in background thread
+    crop_thread = Thread(target=_crop_consumer, daemon=True)
+    crop_thread.start()
+
+    # Run captioning on current thread (GPU-bound)
+    _caption_producer()
+
+    # Wait for all crops to finish
+    crop_thread.join()
+
+    _progress(TaskStatus.RENDERING, 95, "Generating crops",
+              f"{cropped_count[0]}/{total} images cropped")
 
     crops_path = str(crops_dir)
     _progress(TaskStatus.DONE, 100, "Done", crops_path)

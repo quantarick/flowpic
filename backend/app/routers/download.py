@@ -31,7 +31,7 @@ async def list_crops(project_id: str):
     crops_dir = settings.data_dir / project_id / "output" / "crops"
     if not crops_dir.exists():
         raise HTTPException(404, "No crops found")
-    files = sorted(f.name for f in crops_dir.glob("*.jpg"))
+    files = sorted(f.name for f in crops_dir.iterdir() if f.suffix.lower() in (".jpg", ".png"))
     return {"project_id": project_id, "crops": files}
 
 
@@ -41,4 +41,5 @@ async def get_crop(project_id: str, filename: str):
     crop_path = settings.data_dir / project_id / "output" / "crops" / filename
     if not crop_path.exists():
         raise HTTPException(404, "Crop not found")
-    return FileResponse(path=str(crop_path), media_type="image/jpeg")
+    media = "image/png" if crop_path.suffix.lower() == ".png" else "image/jpeg"
+    return FileResponse(path=str(crop_path), media_type=media)
