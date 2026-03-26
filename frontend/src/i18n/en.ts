@@ -85,6 +85,42 @@ const en = {
   btnRetry: "Retry",
   btnContinue: "Continue",
   retryFailed: (msg: string) => `Retry failed: ${msg}`,
+
+  // Publish / Copywriting
+  tabPublish: "Publish",
+  btnGenerateCopy: "Generate Copy",
+  btnGeneratingCopy: "Generating...",
+  copyTitle: "Title",
+  copyDesc: "Description",
+  copyHashtags: "Hashtags",
+  copyCover: "Publish Images",
+  btnSelectAll: "Select All",
+  btnDeselectAll: "Deselect All",
+  btnCopy: "Copy",
+  copiedMsg: "Copied!",
+  copyHint: "Style Hint",
+  copyHintPlaceholder: "e.g. playful tone, focus on food, mention sunset...",
+  copyEmpty: "Click \"Generate Copy\" to create Xiaohongshu copywriting from your photos.",
+  copyError: (msg: string) => `Generation failed: ${msg}`,
+  btnPreview: "Preview",
+  btnEdit: "Edit",
+  publishCrops: "Your Crops",
+  publishVideo: "Your Video",
+
+  // XHS
+  xhsAccount: "XHS Account",
+  xhsConnect: "Connect",
+  xhsDisconnect: "Disconnect",
+  xhsCancel: "Cancel",
+  xhsConnecting: "Connecting...",
+  xhsSaveCookies: "Save Cookies",
+  xhsCookieHint: "Use the cookies.txt Chrome extension to export xiaohongshu.com cookies as JSON, then paste the JSON array here.",
+  xhsExpired: "Cookie expired — please reconnect your account.",
+  xhsBtnPublish: "Publish to XHS",
+  xhsPublishing: "Publishing...",
+  xhsPublishSuccess: "Published!",
+  xhsViewPost: "View Post",
+  xhsPublishFailed: (msg: string) => `Publish failed: ${msg}`,
 } as const;
 
 // Widen literal types so translations can use different string values

@@ -50,6 +50,11 @@ def _init_db():
         conn.execute("SELECT error_message FROM tasks LIMIT 1")
     except sqlite3.OperationalError:
         conn.execute("ALTER TABLE tasks ADD COLUMN error_message TEXT")
+    # Migrate: add task_type column if missing
+    try:
+        conn.execute("SELECT task_type FROM tasks LIMIT 1")
+    except sqlite3.OperationalError:
+        conn.execute("ALTER TABLE tasks ADD COLUMN task_type TEXT DEFAULT 'video'")
     conn.commit()
     conn.close()
     logger.info(f"Task DB initialized at {_DB_PATH}")
@@ -68,8 +73,8 @@ def save_task(record: TaskRecord):
             conn.execute(
                 """INSERT INTO tasks
                    (task_id, project_id, status, created_at, finished_at,
-                    output_path, image_count, duration_seconds, config_json)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    output_path, image_count, duration_seconds, config_json, task_type)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(task_id) DO UPDATE SET
                     status=excluded.status,
                     finished_at=excluded.finished_at,
@@ -88,6 +93,7 @@ def save_task(record: TaskRecord):
                     record.image_count,
                     record.duration_seconds,
                     config_json,
+                    record.task_type,
                 ),
             )
             conn.commit()
@@ -123,14 +129,20 @@ def update_task_status(
             conn.close()
 
 
-def list_tasks(limit: int = 50, offset: int = 0) -> list[TaskRecord]:
-    """List tasks ordered by most recent first."""
+def list_tasks(limit: int = 50, offset: int = 0, task_type: Optional[str] = None) -> list[TaskRecord]:
+    """List tasks ordered by most recent first, optionally filtered by task_type."""
     conn = _get_conn()
     try:
-        rows = conn.execute(
-            "SELECT * FROM tasks ORDER BY created_at DESC LIMIT ? OFFSET ?",
-            (limit, offset),
-        ).fetchall()
+        if task_type:
+            rows = conn.execute(
+                "SELECT * FROM tasks WHERE task_type=? ORDER BY created_at DESC LIMIT ? OFFSET ?",
+                (task_type, limit, offset),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM tasks ORDER BY created_at DESC LIMIT ? OFFSET ?",
+                (limit, offset),
+            ).fetchall()
         return [_row_to_record(r) for r in rows]
     finally:
         conn.close()
@@ -156,6 +168,7 @@ def _row_to_record(row: sqlite3.Row) -> TaskRecord:
         task_id=row["task_id"],
         project_id=row["project_id"],
         status=TaskStatus(row["status"]),
+        task_type=row["task_type"] if "task_type" in row.keys() else "video",
         created_at=datetime.fromisoformat(row["created_at"]),
         finished_at=datetime.fromisoformat(row["finished_at"]) if row["finished_at"] else None,
         output_path=row["output_path"],

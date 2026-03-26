@@ -67,6 +67,7 @@ export interface TaskRecord {
   task_id: string;
   project_id: string;
   status: TaskStatus;
+  task_type?: string;
   created_at: string;
   finished_at: string | null;
   output_path: string | null;
@@ -74,4 +75,26 @@ export interface TaskRecord {
   duration_seconds: number | null;
   config: ProjectConfig | null;
   error_message: string | null;
+}
+
+export interface CopywritingResult {
+  title: string;
+  description: string;
+  hashtags: string[];
+  cover_index: number;
+}
+
+export interface XhsCookieStatus {
+  connected: boolean;
+  username: string | null;
+  user_id: string | null;
+  expired: boolean;
+  error: string | null;
+}
+
+export interface XhsPublishResult {
+  success: boolean;
+  post_url: string | null;
+  note_id: string | null;
+  error: string | null;
 }

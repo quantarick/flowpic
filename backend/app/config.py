@@ -37,6 +37,14 @@ class Settings(BaseSettings):
     default_quality: str = "720p"
     default_aspect_ratio: str = "16:9"
 
+    # Anthropic (copywriting)
+    anthropic_api_key: str = ""
+    copywriting_model: str = "claude-sonnet-4-6"
+
+    # XHS publishing
+    xhs_cookie_file: str = "xhs_cookies.json"
+    xhs_headless: bool = True
+
     # CLIP matching
     clip_model: str = "ViT-B/32"
     clip_image_weight: float = 0.7

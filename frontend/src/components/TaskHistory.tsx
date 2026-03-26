@@ -3,13 +3,7 @@ import * as api from "../api/client";
 import { useI18n } from "../i18n";
 import type { TaskRecord, TaskStatus } from "../types";
 
-interface Props {
-  activeTaskId: string | null;
-  onSelect: (taskId: string) => void;
-  onRetry: (newTaskId: string) => void;
-}
-
-const PIPELINE_STAGES: TaskStatus[] = [
+const VIDEO_STAGES: TaskStatus[] = [
   "analyzing_audio",
   "analyzing_lyrics",
   "classifying_emotion",
@@ -21,7 +15,16 @@ const PIPELINE_STAGES: TaskStatus[] = [
   "done",
 ];
 
-export function TaskHistory({ activeTaskId, onSelect, onRetry }: Props) {
+interface Props {
+  activeTaskId: string | null;
+  onSelect: (taskId: string) => void;
+  onRetry: (newTaskId: string) => void;
+  pipelineStages?: TaskStatus[];
+  taskType?: string;
+}
+
+export function TaskHistory({ activeTaskId, onSelect, onRetry, pipelineStages, taskType }: Props) {
+  const PIPELINE_STAGES = pipelineStages ?? VIDEO_STAGES;
   const { t } = useI18n();
   const [tasks, setTasks] = useState<TaskRecord[]>([]);
   const [collapsed, setCollapsed] = useState(false);
@@ -107,12 +110,12 @@ export function TaskHistory({ activeTaskId, onSelect, onRetry }: Props) {
 
   const refresh = useCallback(async () => {
     try {
-      const list = await api.fetchTasks(20);
+      const list = await api.fetchTasks(20, taskType);
       setTasks(list);
     } catch {
       // silently ignore
     }
-  }, []);
+  }, [taskType]);
 
   useEffect(() => {
     refresh();

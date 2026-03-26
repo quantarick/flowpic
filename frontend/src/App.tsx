@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { ConfigPanel } from "./components/ConfigPanel";
+import { CopywritingPanel } from "./components/CopywritingPanel";
 import { CropPreview } from "./components/CropPreview";
 import { ImageUploader } from "./components/ImageUploader";
 import { LangSwitch } from "./components/LangSwitch";
@@ -10,8 +11,9 @@ import { VideoPreview } from "./components/VideoPreview";
 import { useI18n } from "./i18n";
 import { useProject } from "./hooks/useProject";
 import { useWebSocket } from "./hooks/useWebSocket";
+import { listCrops } from "./api/client";
 
-type Tab = "crops" | "video";
+type Tab = "crops" | "video" | "publish";
 
 export default function App() {
   const { t } = useI18n();
@@ -21,6 +23,16 @@ export default function App() {
   const [showCrops, setShowCrops] = useState(false);
   const [cropTaskRunning, setCropTaskRunning] = useState(false);
   const [videoTaskRunning, setVideoTaskRunning] = useState(false);
+  const [crops, setCrops] = useState<string[]>([]);
+
+  // Load crops from backend (on mount + after crop task completes)
+  const projectId = project.projectId;
+  useEffect(() => {
+    if (!projectId) return;
+    listCrops(projectId)
+      .then((res) => setCrops(res.crops))
+      .catch(() => {});
+  }, [projectId, showCrops]);
 
   // Track which tab started the current task
   const taskId = project.taskId;
@@ -95,11 +107,13 @@ export default function App() {
 
       {/* Tab bar */}
       <div style={{ display: "flex", gap: 0, marginBottom: 24, borderBottom: "1px solid #333" }}>
-        {(["crops", "video"] as Tab[]).map((t2) => {
+        {(["crops", "video", "publish"] as Tab[]).map((t2) => {
           const active = tab === t2;
           const otherTabBusy =
             (t2 === "crops" && videoTaskRunning && isGenerating) ||
             (t2 === "video" && cropTaskRunning && isGenerating);
+          const label =
+            t2 === "crops" ? t.tabCrops : t2 === "video" ? t.tabVideo : t.tabPublish;
           return (
             <button
               key={t2}
@@ -117,7 +131,7 @@ export default function App() {
                 transition: "all 0.15s",
               }}
             >
-              {t2 === "crops" ? t.tabCrops : t.tabVideo}
+              {label}
               {otherTabBusy && (
                 <span
                   style={{
@@ -195,6 +209,18 @@ export default function App() {
                 <CropPreview projectId={project.projectId} />
               </section>
             )}
+
+            <TaskHistory
+              activeTaskId={cropTaskRunning ? project.taskId : null}
+              taskType="crop_preview"
+              pipelineStages={["captioning_images", "reviewing_crops", "done"]}
+              onSelect={() => setShowCrops(true)}
+              onRetry={(newTaskId) => {
+                project.setTaskId(newTaskId);
+                setCropTaskRunning(true);
+                setShowCrops(false);
+              }}
+            />
           </>
         )}
 
@@ -280,8 +306,21 @@ export default function App() {
               activeTaskId={project.taskId}
               onSelect={handleSelectTask}
               onRetry={handleRetry}
+              taskType="video"
             />
           </>
+        )}
+
+        {/* ========== PUBLISH TAB ========== */}
+        {tab === "publish" && (
+          <section>
+            <CopywritingPanel
+              projectId={project.projectId}
+              crops={crops}
+              videoUrl={project.videoUrl}
+              taskId={project.taskId}
+            />
+          </section>
         )}
       </div>
 

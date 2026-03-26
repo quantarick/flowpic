@@ -89,6 +89,7 @@ async def crop_preview(
         project_id=project_id,
         image_count=len(images),
         config=config,
+        task_type="crop_preview",
     ))
 
     from app.workers.video_worker import run_crop_preview
@@ -104,10 +105,14 @@ async def crop_preview(
 
 
 @router.get("/tasks")
-async def list_tasks(limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0)):
-    """List task history, most recent first."""
+async def list_tasks(
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    task_type: str | None = Query(None),
+):
+    """List task history, most recent first. Optional task_type filter."""
     from app.services.task_db import list_tasks as db_list
-    tasks = db_list(limit=limit, offset=offset)
+    tasks = db_list(limit=limit, offset=offset, task_type=task_type)
     return [t.model_dump() for t in tasks]
 
 
@@ -164,9 +169,12 @@ async def retry_task(
     if len(images) < 2:
         raise HTTPException(400, "Need at least 2 images (project files may have been cleaned up)")
 
-    music_files = list(proj_dir.glob("music.*"))
-    if not music_files:
-        raise HTTPException(400, "No music file (project files may have been cleaned up)")
+    is_crop = old_task.task_type == "crop_preview"
+
+    if not is_crop:
+        music_files = list(proj_dir.glob("music.*"))
+        if not music_files:
+            raise HTTPException(400, "No music file (project files may have been cleaned up)")
 
     config = old_task.config or ProjectConfig()
     new_task_id = uuid.uuid4().hex[:16]
@@ -177,16 +185,27 @@ async def retry_task(
         project_id=old_task.project_id,
         image_count=len(images),
         config=config,
+        task_type=old_task.task_type,
     ))
 
-    from app.workers.video_worker import run_pipeline
-    tm.submit(
-        task_id=new_task_id,
-        fn=run_pipeline,
-        project_id=old_task.project_id,
-        task_id_arg=new_task_id,
-        config=config,
-    )
+    if is_crop:
+        from app.workers.video_worker import run_crop_preview
+        tm.submit(
+            task_id=new_task_id,
+            fn=run_crop_preview,
+            project_id=old_task.project_id,
+            task_id_arg=new_task_id,
+            config=config,
+        )
+    else:
+        from app.workers.video_worker import run_pipeline
+        tm.submit(
+            task_id=new_task_id,
+            fn=run_pipeline,
+            project_id=old_task.project_id,
+            task_id_arg=new_task_id,
+            config=config,
+        )
 
     return GenerateResponse(task_id=new_task_id)
 

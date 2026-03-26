@@ -194,6 +194,7 @@ class TaskRecord(BaseModel):
     task_id: str
     project_id: str
     status: TaskStatus = TaskStatus.PENDING
+    task_type: str = "video"
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     finished_at: Optional[datetime] = None
     output_path: Optional[str] = None
@@ -209,6 +210,13 @@ class LocationGroup(BaseModel):
     end_clip_index: int
 
 
+class CopywritingResult(BaseModel):
+    title: str
+    description: str
+    hashtags: list[str]
+    cover_index: int = 0
+
+
 class KenBurnsParams(BaseModel):
     zoom_start: float
     zoom_end: float
@@ -217,3 +225,28 @@ class KenBurnsParams(BaseModel):
     pan_y_start: float
     pan_y_end: float
     face_center: Optional[tuple[float, float]] = None
+
+
+# --- XHS Publishing ---
+
+class XhsCookieStatus(BaseModel):
+    connected: bool = False
+    username: Optional[str] = None
+    user_id: Optional[str] = None
+    expired: bool = False
+    error: Optional[str] = None
+
+
+class XhsPublishRequest(BaseModel):
+    title: str
+    description: str
+    hashtags: list[str] = []
+    image_filenames: list[str] = []
+    is_private: bool = False
+
+
+class XhsPublishResult(BaseModel):
+    success: bool = False
+    post_url: Optional[str] = None
+    note_id: Optional[str] = None
+    error: Optional[str] = None

@@ -87,6 +87,42 @@ const zh: Translations = {
   btnRetry: "重试",
   btnContinue: "继续",
   retryFailed: (msg: string) => `重试失败：${msg}`,
+
+  // Publish / Copywriting
+  tabPublish: "发布",
+  btnGenerateCopy: "生成文案",
+  btnGeneratingCopy: "生成中...",
+  copyTitle: "标题",
+  copyDesc: "正文",
+  copyHashtags: "话题标签",
+  copyCover: "发布图片",
+  btnSelectAll: "全选",
+  btnDeselectAll: "取消全选",
+  btnCopy: "复制",
+  copiedMsg: "已复制！",
+  copyHint: "风格提示",
+  copyHintPlaceholder: "例如：轻松活泼的语气、突出美食、提到日落...",
+  copyEmpty: "点击「生成文案」，根据照片自动生成小红书文案。",
+  copyError: (msg: string) => `生成失败：${msg}`,
+  btnPreview: "预览",
+  btnEdit: "编辑",
+  publishCrops: "裁剪图片",
+  publishVideo: "生成视频",
+
+  // XHS
+  xhsAccount: "小红书账号",
+  xhsConnect: "连接",
+  xhsDisconnect: "断开",
+  xhsCancel: "取消",
+  xhsConnecting: "连接中...",
+  xhsSaveCookies: "保存 Cookie",
+  xhsCookieHint: "使用 cookies.txt Chrome 插件导出 xiaohongshu.com 的 Cookie 为 JSON，然后粘贴到此处。",
+  xhsExpired: "Cookie 已过期，请重新连接账号。",
+  xhsBtnPublish: "发布到小红书",
+  xhsPublishing: "发布中...",
+  xhsPublishSuccess: "发布成功！",
+  xhsViewPost: "查看帖子",
+  xhsPublishFailed: (msg: string) => `发布失败：${msg}`,
 };
 
 export default zh;
