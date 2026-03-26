@@ -26,6 +26,8 @@ FlowPic analyzes your music and photos separately, then intelligently pairs them
 - Near-duplicate image detection (dHash)
 - Real-time progress via WebSocket with cancel support
 - Task history with retry
+- AI copywriting — generates XHS-style titles, descriptions, and hashtags from image captions via Claude
+- One-click XHS (Xiaohongshu) publishing — automated browser upload via Playwright with cookie-based auth
 - i18n (English, Chinese)
 
 ## Prerequisites
@@ -35,6 +37,7 @@ FlowPic analyzes your music and photos separately, then intelligently pairs them
 - **FFmpeg 6+** — required by moviepy (`winget install ffmpeg` on Windows)
 - **Ollama** — for local image captioning (`ollama pull moondream`)
 - **NVIDIA GPU** with 8+ GB VRAM recommended (for Music2Emo, Demucs, Whisper, Ollama)
+- **Playwright** (optional) — for XHS publishing (`playwright install chromium`)
 
 ## Setup
 
@@ -99,10 +102,13 @@ All settings can be overridden via environment variables with the `FLOWPIC_` pre
 | `FLOWPIC_MAX_IMAGES` | `100` | Max images per project |
 | `FLOWPIC_MAX_WORKERS` | `2` | Concurrent generation tasks |
 | `FLOWPIC_CAPTION_PARALLEL` | `3` | Parallel image captioning threads |
+| `FLOWPIC_ANTHROPIC_API_KEY` | — | Anthropic API key for copywriting generation |
+| `FLOWPIC_COPYWRITING_MODEL` | `claude-sonnet-4-6` | Claude model for copywriting |
+| `FLOWPIC_XHS_HEADLESS` | `true` | Run Playwright browser in headless mode for XHS publish |
 
 ## Tech Stack
 
-**Backend**: FastAPI, librosa, Music2Emo, Demucs, Whisper, sentence-transformers, OpenCV, moviepy, geopy
+**Backend**: FastAPI, librosa, Music2Emo, Demucs, Whisper, sentence-transformers, OpenCV, moviepy, geopy, Playwright, Anthropic Claude
 
 **Frontend**: React 18, TypeScript, Vite
 
