@@ -55,6 +55,20 @@ def _init_db():
         conn.execute("SELECT task_type FROM tasks LIMIT 1")
     except sqlite3.OperationalError:
         conn.execute("ALTER TABLE tasks ADD COLUMN task_type TEXT DEFAULT 'video'")
+    # Published images tracking table
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS published_images (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id TEXT NOT NULL,
+            crop_filename TEXT NOT NULL,
+            image_hash TEXT NOT NULL,
+            crop_mode TEXT NOT NULL,
+            published_at TEXT NOT NULL,
+            post_url TEXT,
+            note_id TEXT,
+            UNIQUE(image_hash, crop_mode)
+        )
+    """)
     conn.commit()
     conn.close()
     logger.info(f"Task DB initialized at {_DB_PATH}")
@@ -158,6 +172,85 @@ def get_task(task_id: str) -> Optional[TaskRecord]:
         return _row_to_record(row) if row else None
     finally:
         conn.close()
+
+
+def _parse_crop_filename(filename: str) -> tuple[str, str]:
+    """Extract image_hash and crop_mode from a crop filename.
+
+    Expected format: {index}_{hash}_{mode}.png
+    e.g. "001_0f64301fd3c6_crop.png" -> ("0f64301fd3c6", "crop")
+    """
+    stem = Path(filename).stem  # "001_0f64301fd3c6_crop"
+    parts = stem.rsplit("_", 1)
+    if len(parts) == 2:
+        prefix, mode = parts
+        # Extract hash: skip the index prefix
+        hash_parts = prefix.split("_", 1)
+        image_hash = hash_parts[1] if len(hash_parts) == 2 else prefix
+        return image_hash, mode
+    return stem, "unknown"
+
+
+def record_published_images(
+    project_id: str,
+    crop_filenames: list[str],
+    post_url: str | None = None,
+    note_id: str | None = None,
+):
+    """Record crop images that were successfully published."""
+    now = datetime.now(timezone.utc).isoformat()
+    with _lock:
+        conn = _get_conn()
+        try:
+            for fname in crop_filenames:
+                image_hash, crop_mode = _parse_crop_filename(fname)
+                conn.execute(
+                    """INSERT OR IGNORE INTO published_images
+                       (project_id, crop_filename, image_hash, crop_mode,
+                        published_at, post_url, note_id)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (project_id, fname, image_hash, crop_mode, now, post_url, note_id),
+                )
+            conn.commit()
+            logger.info("Recorded %d published images for project %s", len(crop_filenames), project_id)
+        finally:
+            conn.close()
+
+
+def get_published_image_hashes() -> set[str]:
+    """Return set of '{hash}_{mode}' strings for all published images."""
+    conn = _get_conn()
+    try:
+        rows = conn.execute("SELECT image_hash, crop_mode FROM published_images").fetchall()
+        return {f"{r['image_hash']}_{r['crop_mode']}" for r in rows}
+    finally:
+        conn.close()
+
+
+def get_published_images_for_project(project_id: str) -> list[dict]:
+    """Return published image records for a specific project."""
+    conn = _get_conn()
+    try:
+        rows = conn.execute(
+            "SELECT crop_filename, image_hash, crop_mode, published_at, post_url, note_id "
+            "FROM published_images WHERE project_id = ? ORDER BY published_at DESC",
+            (project_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def filter_unpublished_crops(crop_filenames: list[str]) -> list[str]:
+    """Return only filenames that haven't been published yet."""
+    published = get_published_image_hashes()
+    result = []
+    for fname in crop_filenames:
+        image_hash, crop_mode = _parse_crop_filename(fname)
+        key = f"{image_hash}_{crop_mode}"
+        if key not in published:
+            result.append(fname)
+    return result
 
 
 def _row_to_record(row: sqlite3.Row) -> TaskRecord:

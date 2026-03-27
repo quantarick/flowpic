@@ -29,7 +29,12 @@ BASE_PROMPT = (
     "  'roofline' when buildings meet sky, 'mountain_ridge' for mountain edges. 'skyline' is ONLY for\n"
     "  flat ocean-meets-sky with no land features.\n"
     "- For dramatic/colorful skies (sunset, storm clouds), the sky IS part of the subject — do NOT crop it.\n"
-    "  For plain blue sky with no features, crop aggressively.\n\n"
+    "  For plain blue sky with no features, crop aggressively.\n"
+    "- DISTRIBUTED SUBJECTS: When animals/people/objects are scattered across the WHOLE image\n"
+    "  (e.g. a flock of sheep on a hillside, crowd at a beach), BOUNDS must cover the ENTIRE scene,\n"
+    "  not just the nearest/closest ones. SUBJECT should be the center of the overall scene.\n"
+    "- For LANDSCAPE element type, BOUNDS should almost always cover >60% of the image.\n"
+    "  A landscape BOUNDS smaller than 50% of the image is almost certainly wrong.\n\n"
     "First describe what is at each edge, then analyze the full image.\n"
     "TOP: what is at the top 10%\n"
     "BOTTOM: what is at the bottom 10%\n"
@@ -85,6 +90,19 @@ BASE_PROMPT = (
     "PEOPLE: 0\n"
     "HORIZON: 70%, roofline, yes\n"
     "CROP_HINT: sky IS the subject — do NOT crop any sky, keep full color display with silhouette base\n\n"
+    "Example 4 — pastoral scene with animals distributed across frame:\n"
+    "TOP: blue sky with white clouds\n"
+    "BOTTOM: green grass with fence posts and wire\n"
+    "LEFT: green pasture with grazing sheep\n"
+    "RIGHT: fence line and visitors walking along path, hills in background\n"
+    "CAPTION: Sheep flock grazing on rolling green hillside with visitors walking along fence line, bushy tussocks scattered across paddock.\n"
+    "ELEMENT: landscape\n"
+    "SUBJECT: 45%, 45%\n"
+    "BOUNDS: 0%, 5%, 100%, 95%\n"
+    "PERSON: YES\n"
+    "PEOPLE: 3, 85%,40% 88%,42% 90%,44%\n"
+    "HORIZON: 30%, treeline, yes\n"
+    "CROP_HINT: sheep are distributed across entire field — BOUNDS must cover whole scene, keep hills and sky for depth\n\n"
     "Now analyze the image:"
 )
 
@@ -111,8 +129,12 @@ class ImageCaptioner:
 
     _valid_extensions = {".jpg", ".jpeg", ".png", ".webp"}
 
-    def caption_image(self, image_path: Path) -> ImageCaption:
-        """Generate caption for a single image using Ollama + detect faces/bodies."""
+    def caption_image(self, image_path: Path, feedback: str | None = None) -> ImageCaption:
+        """Generate caption for a single image using Ollama + detect faces/bodies.
+
+        If feedback is provided, skip cache read and re-call the LLM with the
+        feedback injected into the prompt. The old cache file is deleted first.
+        """
         if image_path.suffix.lower() not in self._valid_extensions:
             logger.warning(f"Skipping non-image file: {image_path.name}")
             return ImageCaption(
@@ -125,7 +147,11 @@ class ImageCaptioner:
         cache_dir.mkdir(exist_ok=True)
         cache_file = cache_dir / f"{image_path.stem}.json"
 
-        if cache_file.exists():
+        if feedback:
+            # Force re-caption: delete old cache
+            if cache_file.exists():
+                cache_file.unlink()
+        elif cache_file.exists():
             data = json.loads(cache_file.read_text(encoding="utf-8"))
             return ImageCaption(**data)
 
@@ -150,17 +176,22 @@ class ImageCaptioner:
                             f"tiny faces (< {min_face_px}px in {min_dim}px image)")
 
         # Step 2: Build prompt with CV hints for the LLM
-        prompt = self._build_prompt(face_regions, body_rects, image_path)
+        prompt = self._build_prompt(face_regions, body_rects, image_path, feedback=feedback)
 
         # Step 3: Call LLM with enriched prompt
-        logger.info(f"[{image_path.name}] Step 3: calling Ollama...")
+        logger.info(f"[{image_path.name}] Step 3: calling Ollama... (prompt {len(prompt)} chars, feedback={'yes' if feedback else 'no'})")
         info = self._call_ollama(image_path, prompt)
         logger.info(f"[{image_path.name}] Step 3 done: caption received")
 
         # Step 4: Combine signals — require CV confirmation for person
         # LLM hallucination rate is high; only trust person detection when
         # at least one CV detector (face or body) confirms.
-        has_person = bool(face_regions) or bool(body_rects)
+        # When user provides feedback, they're telling us what matters —
+        # don't let false-positive CV faces override their intent.
+        if feedback:
+            has_person = info.get("has_person", False)
+        else:
+            has_person = bool(face_regions) or bool(body_rects)
 
         # If LLM claims PERSON: YES but no CV detection, the LLM likely
         # hallucinated.  Only clear person-related fields, keep the caption
@@ -193,10 +224,19 @@ class ImageCaptioner:
         else:
             logger.info(f"No GPS data for {image_path.name}")
 
+        # When user provides feedback, always use "crop" mode with their BOUNDS —
+        # don't let CV face detections pull focus away from user's intent.
+        if feedback:
+            fit_mode = "crop"
+            caption_face_regions: list[FaceRegion] = []
+        else:
+            fit_mode = "crop" if info.get("element_type") in ("landscape", "architecture") else ("full" if has_person else "crop")
+            caption_face_regions = face_regions
+
         result = ImageCaption(
             filename=image_path.name,
             caption=info["caption"],
-            face_regions=face_regions,
+            face_regions=caption_face_regions,
             has_person=has_person,
             focus_x=focus_x,
             focus_y=focus_y,
@@ -204,7 +244,7 @@ class ImageCaptioner:
             subject_y1=info.get("subject_y1"),
             subject_x2=info.get("subject_x2"),
             subject_y2=info.get("subject_y2"),
-            fit_mode="crop" if info.get("element_type") in ("landscape", "architecture") else ("full" if has_person else "crop"),
+            fit_mode=fit_mode,
             element_type=info.get("element_type"),
             horizon_y=info.get("horizon_y"),
             horizon_type=info.get("horizon_type"),
@@ -254,6 +294,26 @@ class ImageCaptioner:
 
         return [results[i] for i in range(total)]
 
+    def load_cached_captions(self, image_paths: list[Path]) -> list[ImageCaption] | None:
+        """Return all cached captions if every image has one, else None.
+
+        This is lightweight (just JSON reads, no model loading) and lets the
+        video pipeline skip the GPU-bound captioning stage entirely when all
+        captions already exist from a prior crop preview run.
+        """
+        captions = []
+        for path in image_paths:
+            cache_file = path.parent.parent / "captions" / f"{path.stem}.json"
+            if not cache_file.exists():
+                return None  # at least one missing — caller should run full captioning
+            try:
+                data = json.loads(cache_file.read_text(encoding="utf-8"))
+                captions.append(ImageCaption(**data))
+            except Exception as e:
+                logger.warning(f"Failed to load cached caption for {path.name}: {e}")
+                return None
+        return captions
+
     # --- Prompt building ---
 
     @staticmethod
@@ -261,6 +321,7 @@ class ImageCaptioner:
         face_regions: list[FaceRegion],
         body_rects: list[tuple[int, int, int, int]],
         image_path: Path,
+        feedback: str | None = None,
     ) -> str:
         """Build LLM prompt with CV detection coordinates as reference."""
         # Get image dimensions to convert pixel coords to percentages
@@ -290,15 +351,36 @@ class ImageCaptioner:
                 f"size {w_pct}%x{h_pct}% of image (may be facing any direction)"
             )
 
+        if feedback:
+            # Minimal prompt for feedback re-analysis.
+            # Small models fail with many output fields — keep only the 4 essential ones.
+            # Provide a concrete example so the model copies the format exactly.
+            # "Begin with CAPTION:" forces the model's first token.
+            return (
+                f"The user wants this crop to focus on: {feedback}\n"
+                "Output EXACTLY these 4 lines. Begin with CAPTION:\n\n"
+                "CAPTION: (describe the scene)\n"
+                "SUBJECT: x%, y%\n"
+                "BOUNDS: x1%, y1%, x2%, y2%\n"
+                "CROP_HINT: (what to keep)\n\n"
+                "Example:\n"
+                "CAPTION: Mountain range with green valley and wildflowers.\n"
+                "SUBJECT: 50%, 40%\n"
+                "BOUNDS: 5%, 10%, 95%, 85%\n"
+                "CROP_HINT: Keep mountains and valley, cut empty sky"
+            )
+
+        prompt = BASE_PROMPT
+
         if hints:
-            hint_block = (
+            prompt += (
                 "\nCV detection results (use as reference for SUBJECT position):\n"
                 + "\n".join(hints)
                 + "\nUse these coordinates to pinpoint the main subject precisely. "
                 "PERSON must be YES if any detections are listed above."
             )
-            return BASE_PROMPT + hint_block
-        return BASE_PROMPT
+
+        return prompt
 
     # --- LLM ---
 
@@ -458,6 +540,26 @@ class ImageCaptioner:
 
             elif upper.startswith("CROP_HINT:"):
                 result["crop_hint"] = stripped[len("CROP_HINT:"):].strip()
+
+        # Sanity check: landscape bounds should cover a significant portion of the image.
+        # Small LLMs often fixate on the nearest foreground element and return tiny bounds.
+        if result["element_type"] == "landscape" and all(
+            result[k] is not None for k in ("subject_x1", "subject_y1", "subject_x2", "subject_y2")
+        ):
+            bw = result["subject_x2"] - result["subject_x1"]
+            bh = result["subject_y2"] - result["subject_y1"]
+            area = bw * bh
+            if area < 0.40:
+                logger.warning(
+                    "Landscape bounds too small (%.0f%% area), expanding to full frame",
+                    area * 100,
+                )
+                result["subject_x1"] = 0.0
+                result["subject_y1"] = 0.0
+                result["subject_x2"] = 1.0
+                result["subject_y2"] = 1.0
+                result["focus_x"] = 0.5
+                result["focus_y"] = 0.45
 
         return result
 

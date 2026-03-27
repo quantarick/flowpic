@@ -1,7 +1,14 @@
 import { useCallback, useEffect, useState } from "react";
-import { clearXhsCookies, getXhsCookieStatus, saveXhsCookies } from "../api/client";
+import {
+  clearXhsCookies,
+  clearXhsStyleProfile,
+  getXhsCookieStatus,
+  getXhsStyleProfile,
+  saveXhsCookies,
+  scanXhsStyleProfile,
+} from "../api/client";
 import { useI18n } from "../i18n";
-import type { XhsCookieStatus } from "../types";
+import type { XhsCookieStatus, XhsStyleProfile } from "../types";
 
 interface Props {
   onStatusChange?: (connected: boolean) => void;
@@ -13,6 +20,9 @@ export function XhsConfig({ onStatusChange }: Props) {
   const [showInput, setShowInput] = useState(false);
   const [cookie, setCookie] = useState("");
   const [saving, setSaving] = useState(false);
+  const [styleProfile, setStyleProfile] = useState<XhsStyleProfile | null>(null);
+  const [scanning, setScanning] = useState(false);
+  const [styleError, setStyleError] = useState<string | null>(null);
 
   const fetchStatus = useCallback(async () => {
     try {
@@ -27,7 +37,28 @@ export function XhsConfig({ onStatusChange }: Props) {
 
   useEffect(() => {
     fetchStatus();
+    // Load cached style profile
+    getXhsStyleProfile().then(setStyleProfile).catch(() => {});
   }, [fetchStatus]);
+
+  const handleScanStyle = useCallback(async (force = false) => {
+    setScanning(true);
+    setStyleError(null);
+    try {
+      const profile = await scanXhsStyleProfile(force);
+      setStyleProfile(profile);
+    } catch (e: any) {
+      setStyleError(e.message || "Unknown error");
+    } finally {
+      setScanning(false);
+    }
+  }, []);
+
+  const handleClearStyle = useCallback(async () => {
+    await clearXhsStyleProfile();
+    setStyleProfile(null);
+    setStyleError(null);
+  }, []);
 
   const handleSave = useCallback(async () => {
     setSaving(true);
@@ -192,6 +223,81 @@ export function XhsConfig({ onStatusChange }: Props) {
           {status?.error && (
             <p style={{ color: "#e74c3c", fontSize: 13, margin: "8px 0 0" }}>
               {status.error}
+            </p>
+          )}
+        </div>
+      )}
+
+      {/* Style Scanner */}
+      {connected && (
+        <div style={{ marginTop: 12, borderTop: "1px solid #333", paddingTop: 12 }}>
+          {styleProfile && !styleProfile.error ? (
+            <div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                <span style={{ color: "#2ecc71", fontSize: 13, fontWeight: 600, flex: 1 }}>
+                  {t.xhsStyleActive}
+                </span>
+                <button
+                  onClick={() => handleScanStyle(true)}
+                  disabled={scanning}
+                  style={{
+                    padding: "3px 10px",
+                    fontSize: 12,
+                    borderRadius: 4,
+                    border: "1px solid #6c5ce7",
+                    background: "transparent",
+                    color: "#6c5ce7",
+                    cursor: scanning ? "not-allowed" : "pointer",
+                  }}
+                >
+                  {scanning ? t.xhsScanning : t.xhsRescan}
+                </button>
+                <button
+                  onClick={handleClearStyle}
+                  style={{
+                    padding: "3px 10px",
+                    fontSize: 12,
+                    borderRadius: 4,
+                    border: "1px solid #555",
+                    background: "transparent",
+                    color: "#888",
+                    cursor: "pointer",
+                  }}
+                >
+                  {t.xhsClearStyle}
+                </button>
+              </div>
+              <p style={{ color: "#aaa", fontSize: 12, margin: 0, lineHeight: 1.5 }}>
+                {styleProfile.overall_summary}
+              </p>
+              {styleProfile.scraped_at && (
+                <p style={{ color: "#666", fontSize: 11, margin: "4px 0 0" }}>
+                  {new Date(styleProfile.scraped_at).toLocaleString()}
+                </p>
+              )}
+            </div>
+          ) : (
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <button
+                onClick={() => handleScanStyle(false)}
+                disabled={scanning}
+                style={{
+                  padding: "5px 14px",
+                  fontSize: 13,
+                  borderRadius: 6,
+                  border: "1px solid #f39c12",
+                  background: scanning ? "transparent" : "rgba(243,156,18,0.15)",
+                  color: "#f39c12",
+                  cursor: scanning ? "not-allowed" : "pointer",
+                }}
+              >
+                {scanning ? t.xhsScanning : t.xhsScanStyle}
+              </button>
+            </div>
+          )}
+          {styleError && (
+            <p style={{ color: "#e74c3c", fontSize: 12, margin: "8px 0 0" }}>
+              {t.xhsStyleError(styleError)}
             </p>
           )}
         </div>

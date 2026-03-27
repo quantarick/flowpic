@@ -46,6 +46,9 @@ const en = {
   cropPreviewTitle: "Crop Preview",
   cropLoading: "Loading crops...",
   cropEmpty: "No crops generated yet",
+  cropFeedbackPlaceholder: "What's wrong? e.g. focus on the sheep, not the fence",
+  btnRegenerate: "Regenerate",
+  regenerating: "Regenerating...",
 
   // ProgressBar
   stepPending: "Queued...",
@@ -121,6 +124,19 @@ const en = {
   xhsPublishSuccess: "Published!",
   xhsViewPost: "View Post",
   xhsPublishFailed: (msg: string) => `Publish failed: ${msg}`,
+
+  // Style Scanner
+  xhsScanStyle: "Scan My Style",
+  xhsScanning: "Scanning...",
+  xhsStyleActive: "Style profile active",
+  xhsRescan: "Re-scan",
+  xhsClearStyle: "Clear",
+  xhsStyleError: (msg: string) => `Style scan failed: ${msg}`,
+
+  // Published Images
+  publishedBadge: "Published",
+  btnCleanPublished: "Clean Up Published",
+  cleanedMsg: (n: number) => `Removed ${n} published image${n !== 1 ? "s" : ""}`,
 } as const;
 
 // Widen literal types so translations can use different string values

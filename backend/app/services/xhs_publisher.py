@@ -27,7 +27,7 @@ SELECTORS = {
 }
 
 # Max title length enforced by XHS
-MAX_TITLE_LEN = 20
+MAX_TITLE_LEN = 15
 MAX_IMAGES = 18
 
 
@@ -115,9 +115,27 @@ async def _human_delay(min_ms: int = 500, max_ms: int = 1500):
     await asyncio.sleep(random.randint(min_ms, max_ms) / 1000)
 
 
-async def _type_like_human(element, text: str):
+async def _type_like_human(element, text: str, slow: bool = True):
     """Type text with random per-keystroke delay."""
-    await element.type(text, delay=random.randint(30, 80))
+    if slow:
+        await element.type(text, delay=random.randint(30, 80))
+    else:
+        # Fast path: type without per-key delay (still uses Playwright's type)
+        await element.type(text, delay=0)
+
+
+async def _fill_editor(page, element, text: str):
+    """Fill a ProseMirror/contenteditable editor with text quickly.
+
+    Uses Playwright's keyboard.insertText() which simulates OS-level
+    text input — ProseMirror recognizes this unlike execCommand.
+    """
+    await element.click()
+    await _human_delay(200, 400)
+    # insertText sends the entire string as a single InputEvent
+    # which ProseMirror handles correctly
+    await page.keyboard.insert_text(text)
+    await _human_delay(500, 1000)
 
 
 async def _publish_via_browser(
@@ -223,14 +241,18 @@ async def _publish_via_browser(
 
             # Fill description in content editor
             if description or hashtags:
-                logger.info("Setting description")
+                logger.info("Setting description (%d chars)", len(description or ""))
                 editor = page.locator(SELECTORS["content_editor"]).first
                 await editor.click()
                 await _human_delay(200, 500)
 
-                # Type description
+                # Fill description — use JS execCommand for long text to avoid timeout
                 if description:
-                    await _type_like_human(editor, description)
+                    if len(description) > 100:
+                        logger.info("Using execCommand for long description")
+                        await _fill_editor(page, editor, description)
+                    else:
+                        await _type_like_human(editor, description)
                     await _human_delay()
 
                 # Add hashtags
@@ -424,6 +446,7 @@ def publish_note(
     description: str,
     hashtags: list[str],
     image_filenames: list[str] | None = None,
+    project_id: str | None = None,
 ) -> XhsPublishResult:
     """Upload images and create an image note on XHS via browser automation."""
     # Load cookies
@@ -489,8 +512,22 @@ def publish_note(
             )
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
             result = pool.submit(_run_playwright).result(timeout=120)
-        return result
     else:
-        return asyncio.run(
+        result = asyncio.run(
             _publish_via_browser(cookie_str, image_paths, title, description, hashtags, pw_cookies)
         )
+
+    # Record published images on success
+    if result.success and project_id and image_filenames:
+        try:
+            from app.services.task_db import record_published_images
+            record_published_images(
+                project_id=project_id,
+                crop_filenames=image_filenames,
+                post_url=result.post_url,
+                note_id=result.note_id,
+            )
+        except Exception as e:
+            logger.warning("Failed to record published images: %s", e)
+
+    return result

@@ -44,6 +44,7 @@ class Settings(BaseSettings):
     # XHS publishing
     xhs_cookie_file: str = "xhs_cookies.json"
     xhs_headless: bool = True
+    xhs_style_profile_file: str = "xhs_style_profile.json"
 
     # CLIP matching
     clip_model: str = "ViT-B/32"
@@ -54,7 +55,7 @@ class Settings(BaseSettings):
     max_workers: int = 2
     caption_parallel: int = 1
 
-    model_config = {"env_prefix": "FLOWPIC_"}
+    model_config = {"env_prefix": "FLOWPIC_", "env_file": ".env", "env_file_encoding": "utf-8"}
 
 
 settings = Settings()

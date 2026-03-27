@@ -155,24 +155,31 @@ def run_pipeline(
 
         _save_cache(proj_dir, "segment_emotions", segment_emotions)
 
-    # === Step 3: Caption Images ===
-    _progress(TaskStatus.CAPTIONING_IMAGES, 16, "Captioning images", f"0/{len(image_paths)} images...")
+    # === Step 3: Caption Images (fast-path if all cached) ===
     _check_cancel()
 
     from app.services.image_captioner import ImageCaptioner
     captioner = ImageCaptioner(model=config.vision_model)
 
-    def caption_progress(done: int, total: int):
-        pct = 16 + (done / total) * 14  # 16% to 30%
-        step_pct = int(done / total * 100)
-        _progress(TaskStatus.CAPTIONING_IMAGES, pct, "Captioning images",
-                  f"{done}/{total} images ({step_pct}%)")
-        _check_cancel()
+    cached_captions = captioner.load_cached_captions(image_paths)
+    if cached_captions is not None:
+        image_captions = cached_captions
+        _progress(TaskStatus.CAPTIONING_IMAGES, 30, "Images captioned (cached)",
+                  f"{len(image_captions)} captions loaded from cache")
+    else:
+        _progress(TaskStatus.CAPTIONING_IMAGES, 16, "Captioning images", f"0/{len(image_paths)} images...")
 
-    image_captions = captioner.caption_images(image_paths, progress_callback=caption_progress)
+        def caption_progress(done: int, total: int):
+            pct = 16 + (done / total) * 14  # 16% to 30%
+            step_pct = int(done / total * 100)
+            _progress(TaskStatus.CAPTIONING_IMAGES, pct, "Captioning images",
+                      f"{done}/{total} images ({step_pct}%)")
+            _check_cancel()
 
-    _progress(TaskStatus.CAPTIONING_IMAGES, 30, "Images captioned",
-              f"{len(image_captions)} captions generated")
+        image_captions = captioner.caption_images(image_paths, progress_callback=caption_progress)
+
+        _progress(TaskStatus.CAPTIONING_IMAGES, 30, "Images captioned",
+                  f"{len(image_captions)} captions generated")
 
     # === Step 3.5: Deduplicate similar images ===
     image_captions = _deduplicate_images(image_captions, images_dir)

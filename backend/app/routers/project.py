@@ -141,3 +141,46 @@ async def update_config(project_id: str, config: ProjectConfig):
     meta["config"] = config.model_dump()
     _save_project_meta(proj_dir, meta)
     return config
+
+
+@router.delete("/{project_id}/published-images")
+async def remove_published_images(project_id: str):
+    """Remove source images, captions, and crops for already-published images."""
+    from app.services.task_db import get_published_images_for_project
+
+    proj_dir = _project_dir(project_id)
+    published = get_published_images_for_project(project_id)
+    if not published:
+        return {"removed": 0}
+
+    # Collect published hashes
+    published_hashes = {r["image_hash"] for r in published}
+
+    removed = 0
+    # Remove source images (named {hash}.ext)
+    images_dir = proj_dir / "images"
+    if images_dir.exists():
+        for f in list(images_dir.iterdir()):
+            if f.stem in published_hashes:
+                f.unlink()
+                removed += 1
+
+    # Remove captions (named {hash}.json)
+    captions_dir = proj_dir / "captions"
+    if captions_dir.exists():
+        for f in list(captions_dir.iterdir()):
+            if f.stem in published_hashes:
+                f.unlink()
+
+    # Remove crops (named {idx}_{hash}_{mode}.ext)
+    crops_dir = proj_dir / "output" / "crops"
+    if crops_dir.exists():
+        for f in list(crops_dir.iterdir()):
+            parts = f.stem.rsplit("_", 1)
+            if len(parts) == 2:
+                prefix = parts[0]
+                h = prefix.split("_", 1)[1] if "_" in prefix else prefix
+                if h in published_hashes:
+                    f.unlink()
+
+    return {"removed": removed, "hashes": list(published_hashes)}

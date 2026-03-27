@@ -98,3 +98,32 @@ export interface XhsPublishResult {
   note_id: string | null;
   error: string | null;
 }
+
+export interface ScrapedPost {
+  title: string;
+  description: string;
+  hashtags: string[];
+  note_url: string | null;
+}
+
+export interface XhsStyleProfile {
+  tone: string;
+  emoji_style: string;
+  sentence_structure: string;
+  hashtag_strategy: string;
+  title_pattern: string;
+  sample_phrases: string[];
+  overall_summary: string;
+  scraped_posts: ScrapedPost[];
+  scraped_at: string;
+  error: string | null;
+}
+
+export interface PublishedImageInfo {
+  crop_filename: string;
+  image_hash: string;
+  crop_mode: string;
+  published_at: string;
+  post_url: string | null;
+  note_id: string | null;
+}

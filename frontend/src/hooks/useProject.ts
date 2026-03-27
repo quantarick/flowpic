@@ -281,6 +281,19 @@ export function useProject() {
     });
   }, []);
 
+  const refreshProject = useCallback(async () => {
+    if (!state.projectId) return;
+    try {
+      const info = await api.getProject(state.projectId);
+      setState((s) => ({
+        ...s,
+        images: info.images,
+        music: info.music,
+        config: { ...defaultConfig, ...info.config },
+      }));
+    } catch {}
+  }, [state.projectId]);
+
   return {
     ...state,
     createProject,
@@ -292,5 +305,6 @@ export function useProject() {
     setStatus,
     setDone,
     setTaskId,
+    refreshProject,
   };
 }

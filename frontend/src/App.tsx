@@ -319,6 +319,7 @@ export default function App() {
               crops={crops}
               videoUrl={project.videoUrl}
               taskId={project.taskId}
+              onProjectRefresh={project.refreshProject}
             />
           </section>
         )}

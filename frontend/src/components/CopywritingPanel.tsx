@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { generateCopywriting, getCopywriting, getCropUrl, publishToXhs } from "../api/client";
+import { generateCopywriting, getCopywriting, getCropUrl, getPublishedImages, publishToXhs, removePublishedImages } from "../api/client";
 import { useI18n } from "../i18n";
 import type { CopywritingResult, XhsPublishResult } from "../types";
 import { VideoPreview } from "./VideoPreview";
@@ -11,9 +11,10 @@ interface Props {
   crops: string[];
   videoUrl: string | null;
   taskId: string | null;
+  onProjectRefresh?: () => void;
 }
 
-export function CopywritingPanel({ projectId, crops, videoUrl, taskId }: Props) {
+export function CopywritingPanel({ projectId, crops, videoUrl, taskId, onProjectRefresh }: Props) {
   const { t } = useI18n();
   const [result, setResult] = useState<CopywritingResult | null>(null);
   const [loading, setLoading] = useState(false);
@@ -25,20 +26,32 @@ export function CopywritingPanel({ projectId, crops, videoUrl, taskId }: Props) 
   const [publishing, setPublishing] = useState(false);
   const [publishResult, setPublishResult] = useState<XhsPublishResult | null>(null);
   const [hint, setHint] = useState("");
+  const [publishedFilenames, setPublishedFilenames] = useState<Set<string>>(new Set());
 
-  // Load cached result on mount
+  // Load cached result and published images on mount
   useEffect(() => {
     if (!projectId) return;
     getCopywriting(projectId).then(setResult).catch(() => {});
+    getPublishedImages(projectId)
+      .then((data) => {
+        setPublishedFilenames(new Set(data.published_images.map((img) => img.crop_filename)));
+      })
+      .catch(() => {});
   }, [projectId]);
 
   const MAX_PUBLISH_IMAGES = 15;
 
-  // Select up to max crops by default when they load
+  // Select up to max unpublished crops by default when they load
   useEffect(() => {
-    if (crops.length > 0)
-      setSelectedImages(new Set(crops.slice(0, MAX_PUBLISH_IMAGES).map((_, i) => i)));
-  }, [crops]);
+    if (crops.length > 0) {
+      const unpublished = crops
+        .map((fname, i) => ({ fname, i }))
+        .filter(({ fname }) => !publishedFilenames.has(fname))
+        .slice(0, MAX_PUBLISH_IMAGES)
+        .map(({ i }) => i);
+      setSelectedImages(new Set(unpublished));
+    }
+  }, [crops, publishedFilenames]);
 
   const handleGenerate = useCallback(async () => {
     if (!projectId) return;
@@ -71,12 +84,34 @@ export function CopywritingPanel({ projectId, crops, videoUrl, taskId }: Props) 
         image_filenames: filenames,
       });
       setPublishResult(r);
+      // Refresh published images on success
+      if (r.success && projectId) {
+        getPublishedImages(projectId)
+          .then((data) => {
+            setPublishedFilenames(new Set(data.published_images.map((img) => img.crop_filename)));
+          })
+          .catch(() => {});
+      }
     } catch (e: any) {
       setPublishResult({ success: false, post_url: null, note_id: null, error: e.message });
     } finally {
       setPublishing(false);
     }
   }, [projectId, result, crops, selectedImages]);
+
+  const [cleanedCount, setCleanedCount] = useState<number | null>(null);
+
+  const handleCleanPublished = useCallback(async () => {
+    if (!projectId) return;
+    try {
+      const res = await removePublishedImages(projectId);
+      setCleanedCount(res.removed);
+      onProjectRefresh?.();
+      setTimeout(() => setCleanedCount(null), 3000);
+    } catch {
+      // ignore
+    }
+  }, [projectId, onProjectRefresh]);
 
   const copyToClipboard = useCallback(
     (text: string, label: string) => {
@@ -94,6 +129,31 @@ export function CopywritingPanel({ projectId, crops, videoUrl, taskId }: Props) 
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
       {/* XHS Account Config */}
       <XhsConfig onStatusChange={setXhsConnected} />
+
+      {/* Clean up published images */}
+      {publishedFilenames.size > 0 && (
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <button
+            onClick={handleCleanPublished}
+            style={{
+              padding: "5px 14px",
+              fontSize: 13,
+              borderRadius: 6,
+              border: "1px solid #e67e22",
+              background: "rgba(230,126,34,0.15)",
+              color: "#e67e22",
+              cursor: "pointer",
+            }}
+          >
+            {t.btnCleanPublished} ({publishedFilenames.size})
+          </button>
+          {cleanedCount !== null && (
+            <span style={{ color: "#2ecc71", fontSize: 13 }}>
+              {t.cleanedMsg(cleanedCount)}
+            </span>
+          )}
+        </div>
+      )}
 
       {/* Crop thumbnail strip */}
       {crops.length > 0 && (
@@ -317,9 +377,15 @@ export function CopywritingPanel({ projectId, crops, videoUrl, taskId }: Props) 
                     </h3>
                     <button
                       onClick={() =>
-                        setSelectedImages((prev) =>
-                          prev.size > 0 ? new Set() : new Set(crops.slice(0, MAX_PUBLISH_IMAGES).map((_, i) => i))
-                        )
+                        setSelectedImages((prev) => {
+                          if (prev.size > 0) return new Set();
+                          const unpublished = crops
+                            .map((fname, i) => ({ fname, i }))
+                            .filter(({ fname }) => !publishedFilenames.has(fname))
+                            .slice(0, MAX_PUBLISH_IMAGES)
+                            .map(({ i }) => i);
+                          return new Set(unpublished.length > 0 ? unpublished : crops.slice(0, MAX_PUBLISH_IMAGES).map((_, i) => i));
+                        })
                       }
                       style={{
                         padding: "3px 10px",
@@ -343,6 +409,7 @@ export function CopywritingPanel({ projectId, crops, videoUrl, taskId }: Props) 
                   >
                     {crops.map((filename, i) => {
                       const selected = selectedImages.has(i);
+                      const isPublished = publishedFilenames.has(filename);
                       return (
                         <div
                           key={filename}
@@ -361,9 +428,10 @@ export function CopywritingPanel({ projectId, crops, videoUrl, taskId }: Props) 
                               ? "3px solid #e74c3c"
                               : "3px solid transparent",
                             cursor: "pointer",
-                            opacity: selected ? 1 : 0.4,
+                            opacity: isPublished && !selected ? 0.35 : selected ? 1 : 0.4,
                             transition: "all 0.15s",
                             position: "relative",
+                            filter: isPublished ? "grayscale(60%)" : "none",
                           }}
                         >
                           <img
@@ -395,6 +463,24 @@ export function CopywritingPanel({ projectId, crops, videoUrl, taskId }: Props) 
                               }}
                             >
                               {Array.from(selectedImages).sort((a, b) => a - b).indexOf(i) + 1}
+                            </div>
+                          )}
+                          {isPublished && (
+                            <div
+                              style={{
+                                position: "absolute",
+                                bottom: 4,
+                                left: 4,
+                                padding: "2px 6px",
+                                borderRadius: 4,
+                                background: "rgba(46,204,113,0.85)",
+                                color: "#fff",
+                                fontSize: 10,
+                                fontWeight: 700,
+                                lineHeight: 1.2,
+                              }}
+                            >
+                              {t.publishedBadge}
                             </div>
                           )}
                         </div>

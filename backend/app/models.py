@@ -229,6 +229,26 @@ class KenBurnsParams(BaseModel):
 
 # --- XHS Publishing ---
 
+class ScrapedPost(BaseModel):
+    title: str
+    description: str
+    hashtags: list[str]
+    note_url: str | None = None
+
+
+class XhsStyleProfile(BaseModel):
+    tone: str
+    emoji_style: str
+    sentence_structure: str
+    hashtag_strategy: str
+    title_pattern: str
+    sample_phrases: list[str] = []
+    overall_summary: str
+    scraped_posts: list[ScrapedPost] = []
+    scraped_at: str = ""
+    error: str | None = None
+
+
 class XhsCookieStatus(BaseModel):
     connected: bool = False
     username: Optional[str] = None

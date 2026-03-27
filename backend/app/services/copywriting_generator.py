@@ -74,7 +74,7 @@ SYSTEM_PROMPT = """\
 生成一篇适合小红书发布的文案。默认使用中文，但如果用户要求其他语言或风格，请按用户指示执行。
 
 要求：
-1. 标题（title）：20字以内，吸引眼球，可用emoji点缀
+1. 标题（title）：15字以内，吸引眼球，可用emoji点缀
 2. 正文（description）：100-200字，口语化、有感染力，分段落，适当使用emoji
 3. 话题标签（hashtags）：5-8个热门相关标签，带#号
 4. 封面推荐（cover_index）：从图片列表中选择最适合做封面的图片序号（从0开始）
@@ -87,6 +87,35 @@ SYSTEM_PROMPT = """\
 请严格按以下JSON格式输出，不要输出其他内容：
 {"title": "...", "description": "...", "hashtags": ["#tag1", "#tag2", ...], "cover_index": 0}\
 """
+
+
+def _load_style_profile() -> str | None:
+    """Load cached XHS style profile and format as prompt section."""
+    path = settings.data_dir / settings.xhs_style_profile_file
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if data.get("error"):
+            return None
+        parts = []
+        if data.get("tone"):
+            parts.append(f"语气风格：{data['tone']}")
+        if data.get("emoji_style"):
+            parts.append(f"Emoji习惯：{data['emoji_style']}")
+        if data.get("sentence_structure"):
+            parts.append(f"句式特点：{data['sentence_structure']}")
+        if data.get("hashtag_strategy"):
+            parts.append(f"标签策略：{data['hashtag_strategy']}")
+        if data.get("title_pattern"):
+            parts.append(f"标题风格：{data['title_pattern']}")
+        if data.get("sample_phrases"):
+            parts.append(f"典型短语：{'、'.join(data['sample_phrases'])}")
+        if data.get("overall_summary"):
+            parts.append(f"总结：{data['overall_summary']}")
+        return "\n".join(parts) if parts else None
+    except Exception:
+        return None
 
 
 def generate_copywriting(project_dir: Path, hint: str = "") -> CopywritingResult:
@@ -105,6 +134,12 @@ def generate_copywriting(project_dir: Path, hint: str = "") -> CopywritingResult
     user_content = _build_prompt(captions, emotions, locations)
 
     system = SYSTEM_PROMPT
+
+    # Inject style profile between base prompt and user hint
+    style_text = _load_style_profile()
+    if style_text:
+        system += f"\n\n【参考本账号的文案风格——优先模仿】\n{style_text}"
+
     if hint.strip():
         system += f"\n\n【用户额外要求——必须遵循】\n{hint.strip()}"
 

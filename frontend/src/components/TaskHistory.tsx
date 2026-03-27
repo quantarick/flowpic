@@ -284,6 +284,9 @@ export function TaskHistory({ activeTaskId, onSelect, onRetry, pipelineStages, t
                         whiteSpace: "nowrap",
                       }}
                     >
+                      <span style={{ color: "#666", fontFamily: "monospace", fontSize: 11, marginRight: 6 }}>
+                        {tk.task_id.slice(0, 8)}
+                      </span>
                       {t.taskImages(tk.image_count)}
                       {tk.config
                         ? ` / ${tk.config.quality} / ${tk.config.aspect_ratio}`

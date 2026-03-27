@@ -48,6 +48,9 @@ const zh: Translations = {
   cropPreviewTitle: "裁剪预览",
   cropLoading: "加载中...",
   cropEmpty: "暂无裁剪结果",
+  cropFeedbackPlaceholder: "哪里有问题？例如：主体应该是羊群，而不是栅栏",
+  btnRegenerate: "重新生成",
+  regenerating: "重新生成中...",
 
   // ProgressBar
   stepPending: "排队中...",
@@ -123,6 +126,19 @@ const zh: Translations = {
   xhsPublishSuccess: "发布成功！",
   xhsViewPost: "查看帖子",
   xhsPublishFailed: (msg: string) => `发布失败：${msg}`,
+
+  // Style Scanner
+  xhsScanStyle: "扫描我的风格",
+  xhsScanning: "扫描中...",
+  xhsStyleActive: "风格模板已激活",
+  xhsRescan: "重新扫描",
+  xhsClearStyle: "清除",
+  xhsStyleError: (msg: string) => `风格扫描失败：${msg}`,
+
+  // Published Images
+  publishedBadge: "已发布",
+  btnCleanPublished: "清理已发布图片",
+  cleanedMsg: (n: number) => `已移除 ${n} 张已发布图片`,
 };
 
 export default zh;

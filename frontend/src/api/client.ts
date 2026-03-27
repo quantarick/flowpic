@@ -5,10 +5,12 @@ import type {
   OllamaModelsResponse,
   ProjectConfig,
   ProjectInfo,
+  PublishedImageInfo,
   TaskRecord,
   UploadResponse,
   XhsCookieStatus,
   XhsPublishResult,
+  XhsStyleProfile,
 } from "../types";
 
 const BASE = "/api";
@@ -118,6 +120,30 @@ export function getCropUrl(projectId: string, filename: string): string {
   return `${BASE}/crops/${projectId}/${filename}`;
 }
 
+export function getOriginalImageUrl(projectId: string, cropFilename: string): string {
+  // Crop filename format: "003_<stem>_<mode>.png" → extract stem
+  const base = cropFilename.replace(/\.[^.]+$/, ""); // strip extension
+  const firstUnderscore = base.indexOf("_");
+  if (firstUnderscore < 0) return "";
+  const rest = base.slice(firstUnderscore + 1); // "<stem>_<mode>"
+  const lastUnderscore = rest.lastIndexOf("_");
+  if (lastUnderscore < 0) return "";
+  const stem = rest.slice(0, lastUnderscore);
+  return `${BASE}/images/${projectId}/${stem}`;
+}
+
+export async function regenerateCrop(
+  projectId: string,
+  cropFilename: string,
+  feedback: string
+): Promise<{ crop_filename: string }> {
+  return request(`/crops/${projectId}/regenerate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ crop_filename: cropFilename, feedback }),
+  });
+}
+
 export async function generateCopywriting(
   projectId: string,
   hint?: string
@@ -162,4 +188,32 @@ export async function publishToXhs(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
   });
+}
+
+// --- XHS Style Scanner ---
+
+export async function scanXhsStyleProfile(force = false): Promise<XhsStyleProfile> {
+  return request(`/xhs/style-profile?force=${force}`, { method: "POST" });
+}
+
+export async function getXhsStyleProfile(): Promise<XhsStyleProfile> {
+  return request("/xhs/style-profile");
+}
+
+export async function clearXhsStyleProfile(): Promise<void> {
+  return request("/xhs/style-profile", { method: "DELETE" });
+}
+
+// --- Published Images ---
+
+export async function getPublishedImages(
+  projectId: string
+): Promise<{ project_id: string; published_images: PublishedImageInfo[] }> {
+  return request(`/xhs/published-images/${projectId}`);
+}
+
+export async function removePublishedImages(
+  projectId: string
+): Promise<{ removed: number }> {
+  return request(`/project/${projectId}/published-images`, { method: "DELETE" });
 }
