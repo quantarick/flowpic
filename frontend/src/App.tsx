@@ -99,6 +99,30 @@ export default function App() {
     >
       <header style={{ textAlign: "center", marginBottom: 24, position: "relative" }}>
         <LangSwitch />
+        <button
+          onClick={() => {
+            project.newProject();
+            setShowCrops(false);
+            setCropTaskRunning(false);
+            setVideoTaskRunning(false);
+            setCrops([]);
+            setTab("crops");
+          }}
+          style={{
+            position: "absolute",
+            left: 0,
+            top: 8,
+            padding: "6px 14px",
+            fontSize: 13,
+            borderRadius: 6,
+            border: "1px solid #555",
+            background: "transparent",
+            color: "#aaa",
+            cursor: "pointer",
+          }}
+        >
+          + {t.btnNewProject}
+        </button>
         <h1 style={{ fontSize: 36, fontWeight: 700, margin: "0 0 8px" }}>
           {t.appTitle}
         </h1>
@@ -242,7 +266,7 @@ export default function App() {
                 config={project.config}
                 onChange={project.updateConfig}
                 disabled={isGenerating}
-                fields={["fps"]}
+                fields={["aspect_ratio", "quality", "fps"]}
               />
             </section>
 

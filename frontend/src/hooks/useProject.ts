@@ -294,6 +294,22 @@ export function useProject() {
     } catch {}
   }, [state.projectId]);
 
+  const newProject = useCallback(async () => {
+    saveSession(null, null);
+    setState({
+      projectId: null,
+      images: [],
+      music: null,
+      musicDuration: null,
+      config: defaultConfig,
+      taskId: null,
+      status: null,
+      videoUrl: null,
+      loading: false,
+      error: null,
+    });
+  }, []);
+
   return {
     ...state,
     createProject,
@@ -306,5 +322,6 @@ export function useProject() {
     setDone,
     setTaskId,
     refreshProject,
+    newProject,
   };
 }

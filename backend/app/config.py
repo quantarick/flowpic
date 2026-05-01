@@ -21,7 +21,7 @@ class Settings(BaseSettings):
 
     # Upload limits
     max_images: int = 100
-    max_image_size_mb: int = 20
+    max_image_size_mb: int = 50
     max_music_size_mb: int = 100
     max_music_duration_sec: int = 600  # 10 minutes
     allowed_image_types: list[str] = ["image/jpeg", "image/png", "image/webp"]

@@ -19,7 +19,7 @@ from app.models import (
     Quality,
     SegmentEmotion,
 )
-from app.services.smart_crop import get_output_resolution, smart_fit, remap_face_regions
+from app.services.smart_crop import get_output_resolution, smart_fit, pan_fit, remap_face_regions
 from app.services.subtitle_renderer import (
     compute_title_font_size,
     generate_title_card,
@@ -29,10 +29,17 @@ logger = logging.getLogger(__name__)
 _use_gpu = torch.cuda.is_available()
 
 
-def _pick_encoder() -> tuple[str, list[str]]:
-    """Select the best available H.264 encoder: NVENC GPU → CPU fallback."""
+def _pick_encoder(width: int = 0, height: int = 0) -> tuple[str, list[str]]:
+    """Select the best available H.264 encoder: NVENC GPU → CPU fallback.
+
+    NVENC on consumer GPUs has a max encode width of 4096px.
+    If the output exceeds this, fall back to libx264.
+    """
     import subprocess
     from moviepy.config import FFMPEG_BINARY
+
+    # NVENC max dimension on most consumer NVIDIA GPUs
+    NVENC_MAX_DIM = 4096
 
     try:
         result = subprocess.run(
@@ -43,14 +50,18 @@ def _pick_encoder() -> tuple[str, list[str]]:
     except Exception:
         encoders = ""
 
-    if "h264_nvenc" in encoders:
-        logger.info("Using NVENC GPU encoder (h264_nvenc)")
+    if "h264_nvenc" in encoders and width <= NVENC_MAX_DIM and height <= NVENC_MAX_DIM:
+        logger.info("Using NVENC GPU encoder (h264_nvenc) for %dx%d", width, height)
         return "h264_nvenc", [
             "-pix_fmt", "yuv420p",
             "-preset", "p4", "-rc", "vbr", "-cq", "23",
         ]
     else:
-        logger.info("Using CPU encoder (libx264)")
+        if width > NVENC_MAX_DIM or height > NVENC_MAX_DIM:
+            logger.info("Resolution %dx%d exceeds NVENC limit (%d), using CPU encoder",
+                        width, height, NVENC_MAX_DIM)
+        else:
+            logger.info("Using CPU encoder (libx264)")
         return "libx264", ["-pix_fmt", "yuv420p"]
 
 
@@ -128,7 +139,7 @@ class VideoGenerator:
 
             seg_duration = (seg_emo.end - seg_emo.start) + per_clip_extra
 
-            # Load and crop image (keep BGR for smart_fit saliency calculations)
+            # Load image (keep BGR for smart_fit saliency calculations)
             img_path = images_dir / match.image_filename
             img = cv2.imread(str(img_path))
             if img is None:
@@ -147,40 +158,87 @@ class VideoGenerator:
                     caption_info.subject_x2, caption_info.subject_y2,
                 )
 
-            fit_result = smart_fit(
-                img, self.out_w, self.out_h,
-                face_regions=face_regions,
-                focus_x=focus_x,
-                focus_y=focus_y,
-                scale_factor=1.0,
-                fit_mode=fit_mode,
-                subject_box=subject_box,
-                horizon_y=caption_info.horizon_y if caption_info else None,
-                horizon_valid=caption_info.horizon_valid if caption_info else False,
-                people_centers=caption_info.people_centers if caption_info else None,
-            )
-
-            # Save cropped image for debugging (already BGR)
             stem = Path(match.image_filename).stem
-            cv2.imwrite(
-                str(crops_dir / f"{i:03d}_{stem}_{fit_mode}.jpg"),
-                fit_result.canvas,
-            )
 
-            # Convert to RGB for moviepy/Ken Burns rendering
-            canvas = cv2.cvtColor(fit_result.canvas, cv2.COLOR_BGR2RGB)
+            # Detect orientation mismatch: portrait image in landscape output
+            img_h, img_w = img.shape[:2]
+            img_aspect = img_w / img_h
+            out_aspect = self.out_w / self.out_h
+            use_pan = img_aspect / out_aspect < 0.65
 
-            # Remap face regions to canvas coordinates
-            canvas_faces = remap_face_regions(face_regions, fit_result)
+            if use_pan:
+                # Portrait image → pan mode: scale to fill width, pan vertically
+                pan_result = pan_fit(
+                    img, self.out_w, self.out_h,
+                    face_regions=face_regions,
+                )
 
-            kb_params = self.ken_burns.generate_params(
-                segment_index=i,
-                arousal=seg_emo.arousal if seg_emo else 5.0,
-                face_regions=canvas_faces,
-                source_w=canvas.shape[1],
-                source_h=canvas.shape[0],
-                content_center=(fit_result.content_center_x, fit_result.content_center_y),
-            )
+                # Save debug crop: center frame of the oversized canvas
+                center_y = max(0, (pan_result.canvas_h - self.out_h) // 2)
+                debug_crop = pan_result.canvas[center_y:center_y + self.out_h, 0:self.out_w]
+                cv2.imwrite(
+                    str(crops_dir / f"{i:03d}_{stem}_pan.jpg"),
+                    debug_crop,
+                )
+
+                # Convert to RGB for moviepy/Ken Burns
+                canvas = cv2.cvtColor(pan_result.canvas, cv2.COLOR_BGR2RGB)
+
+                kb_params = self.ken_burns.generate_pan_params(
+                    segment_index=i,
+                    clip_duration=seg_duration,
+                    canvas_h=pan_result.canvas_h,
+                    canvas_w=pan_result.canvas_w,
+                    face_regions=pan_result.face_regions_mapped,
+                    pan_axis=pan_result.pan_axis,
+                )
+
+                logger.info(
+                    f"Clip {i}: PAN mode ({pan_result.pan_axis}) "
+                    f"canvas={pan_result.canvas_w}x{pan_result.canvas_h} "
+                    f"pan_y={kb_params.pan_y_start:.3f}→{kb_params.pan_y_end:.3f}"
+                )
+            else:
+                # Landscape/square image → crop mode with headroom for zoom
+                fit_result = smart_fit(
+                    img, self.out_w, self.out_h,
+                    face_regions=face_regions,
+                    focus_x=focus_x,
+                    focus_y=focus_y,
+                    scale_factor=1.08,
+                    fit_mode=fit_mode,
+                    subject_box=subject_box,
+                    horizon_y=caption_info.horizon_y if caption_info else None,
+                    horizon_valid=caption_info.horizon_valid if caption_info else False,
+                    people_centers=caption_info.people_centers if caption_info else None,
+                )
+
+                # Save cropped image for debugging (already BGR)
+                cv2.imwrite(
+                    str(crops_dir / f"{i:03d}_{stem}_{fit_mode}.jpg"),
+                    fit_result.canvas,
+                )
+
+                # Convert to RGB for moviepy/Ken Burns rendering
+                canvas = cv2.cvtColor(fit_result.canvas, cv2.COLOR_BGR2RGB)
+
+                # Remap face regions to canvas coordinates
+                canvas_faces = remap_face_regions(face_regions, fit_result)
+
+                kb_params = self.ken_burns.generate_params(
+                    segment_index=i,
+                    arousal=seg_emo.arousal if seg_emo else 5.0,
+                    face_regions=canvas_faces,
+                    source_w=canvas.shape[1],
+                    source_h=canvas.shape[0],
+                    content_center=(fit_result.content_center_x, fit_result.content_center_y),
+                )
+
+                logger.info(
+                    f"Clip {i}: ZOOM mode "
+                    f"canvas={canvas.shape[1]}x{canvas.shape[0]} "
+                    f"zoom={kb_params.zoom_start:.3f}→{kb_params.zoom_end:.3f}"
+                )
 
             if _use_gpu:
                 # Upload image to GPU once, render all frames via grid_sample
@@ -258,7 +316,7 @@ class VideoGenerator:
 
         # Write output
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        codec, ffmpeg_params = _pick_encoder()
+        codec, ffmpeg_params = _pick_encoder(self.out_w, self.out_h)
         final_clip.write_videofile(
             str(output_path),
             fps=self.fps,

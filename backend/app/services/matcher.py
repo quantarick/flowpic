@@ -230,6 +230,11 @@ class SemanticMatcher:
                 mood_description=a.mood_description,
                 visual_mood_description=a.visual_mood_description,
             )
+            # Update energy map: merged segment's energy = sum of both halves
+            # so it won't be picked as "lowest energy" repeatedly
+            e1 = energy_map.get(a.segment_index, 0)
+            e2 = energy_map.get(b.segment_index, 0)
+            energy_map[a.segment_index] = e1 + e2
             merged[merge_idx] = merged_seg
             del merged[merge_idx + 1]
 

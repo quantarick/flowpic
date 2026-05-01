@@ -11,10 +11,11 @@ const zh: Translations = {
   tabCrops: "裁剪",
   tabVideo: "视频",
   hintPreviewCrops: "提示：可先在「裁剪」标签页预览构图，确认无误后再生成视频。",
+  btnNewProject: "新项目",
 
   // ImageUploader
   imgDropHint: "拖拽图片到此处，或点击选择文件",
-  imgFormatHint: "支持 JPG、PNG、WebP，最多 100 张，每张不超过 20MB",
+  imgFormatHint: "支持 JPG、PNG、WebP，最多 100 张，每张不超过 50MB",
   imgUploaded: (n: number) => `已上传 ${n} 张图片`,
   imgAddMore: "点击或拖拽继续添加",
 

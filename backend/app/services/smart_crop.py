@@ -49,6 +49,78 @@ class FitResult:
     content_center_y: float     # Center of content area in canvas coords (normalized 0..1)
 
 
+@dataclass
+class PanFitResult:
+    """Result from pan_fit(): an oversized canvas for vertical/horizontal panning."""
+    canvas: np.ndarray          # Oversized image (taller or wider than output)
+    canvas_w: int
+    canvas_h: int
+    pan_axis: str               # "vertical" or "horizontal"
+    face_regions_mapped: list[FaceRegion]  # Face regions in canvas coordinates
+    scale: float                # Scale factor applied to original image
+
+
+def pan_fit(
+    image: np.ndarray,
+    target_w: int,
+    target_h: int,
+    face_regions: list[FaceRegion] | None = None,
+) -> PanFitResult:
+    """Scale image to fill output width (for portrait) or height (for landscape mismatch),
+    returning an oversized canvas suitable for panning.
+
+    For portrait images in landscape output: scales to fill width, canvas is taller than output.
+    Cap canvas height at 4x output height to limit memory.
+    """
+    h, w = image.shape[:2]
+    img_aspect = w / h
+    out_aspect = target_w / target_h
+
+    if img_aspect < out_aspect:
+        # Portrait in landscape: scale to fill width, pan vertically
+        scale = target_w / w
+        pan_axis = "vertical"
+    else:
+        # Landscape in portrait: scale to fill height, pan horizontally
+        scale = target_h / h
+        pan_axis = "horizontal"
+
+    canvas_w = int(w * scale)
+    canvas_h = int(h * scale)
+
+    # Cap at 4x output dimension to limit GPU memory
+    if pan_axis == "vertical" and canvas_h > target_h * 4:
+        scale = (target_h * 4) / h
+        canvas_w = int(w * scale)
+        canvas_h = int(h * scale)
+    elif pan_axis == "horizontal" and canvas_w > target_w * 4:
+        scale = (target_w * 4) / w
+        canvas_w = int(w * scale)
+        canvas_h = int(h * scale)
+
+    canvas = cv2.resize(image, (canvas_w, canvas_h), interpolation=cv2.INTER_LANCZOS4)
+
+    # Map face regions to canvas coordinates
+    mapped_faces = []
+    if face_regions:
+        for f in face_regions:
+            mapped_faces.append(FaceRegion(
+                x=int(f.x * scale),
+                y=int(f.y * scale),
+                w=int(f.w * scale),
+                h=int(f.h * scale),
+            ))
+
+    return PanFitResult(
+        canvas=canvas,
+        canvas_w=canvas_w,
+        canvas_h=canvas_h,
+        pan_axis=pan_axis,
+        face_regions_mapped=mapped_faces,
+        scale=scale,
+    )
+
+
 def get_output_resolution(
     aspect_ratio: AspectRatio, quality: Quality
 ) -> tuple[int, int]:

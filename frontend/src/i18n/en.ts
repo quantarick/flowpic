@@ -9,10 +9,11 @@ const en = {
   tabCrops: "Crops",
   tabVideo: "Video",
   hintPreviewCrops: "Tip: Preview crops first in the Crops tab to review framing before generating.",
+  btnNewProject: "New Project",
 
   // ImageUploader
   imgDropHint: "Drop images here or click to browse",
-  imgFormatHint: "JPG, PNG, WebP - up to 100 images, 20MB each",
+  imgFormatHint: "JPG, PNG, WebP - up to 100 images, 50MB each",
   imgUploaded: (n: number) => `${n} image${n !== 1 ? "s" : ""} uploaded`,
   imgAddMore: "Click or drop to add more",
 
