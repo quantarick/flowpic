@@ -39,6 +39,8 @@ const defaultConfig: ProjectConfig = {
   fps: 30,
   vision_model: null,
   skip_crop_review: true,
+  fit_strategy: "crop",
+  frame_style: "film",
 };
 
 export function useProject() {

@@ -1,5 +1,7 @@
 export type AspectRatio = "16:9" | "21:9" | "9:16" | "1:1" | "4:3";
 export type Quality = "720p" | "1080p" | "2k" | "4k";
+export type FitStrategy = "crop" | "frame";
+export type FrameStyle = "film" | "clean" | "polaroid" | "shadow";
 export type TaskStatus =
   | "pending"
   | "analyzing_audio"
@@ -20,6 +22,8 @@ export interface ProjectConfig {
   fps: number;
   vision_model: string | null;
   skip_crop_review: boolean;
+  fit_strategy: FitStrategy;
+  frame_style: FrameStyle;
 }
 
 export interface OllamaModel {

@@ -25,6 +25,18 @@ class Quality(str, Enum):
     UHD = "4k"
 
 
+class FitStrategy(str, Enum):
+    CROP = "crop"
+    FRAME = "frame"
+
+
+class FrameStyle(str, Enum):
+    FILM = "film"
+    CLEAN = "clean"
+    POLAROID = "polaroid"
+    SHADOW = "shadow"
+
+
 class TaskStatus(str, Enum):
     PENDING = "pending"
     ANALYZING_AUDIO = "analyzing_audio"
@@ -48,6 +60,8 @@ class ProjectConfig(BaseModel):
     fps: int = Field(default=30, ge=15, le=60)
     vision_model: Optional[str] = None  # Ollama model override; None = use server default
     skip_crop_review: bool = True
+    fit_strategy: FitStrategy = FitStrategy.CROP
+    frame_style: FrameStyle = FrameStyle.FILM
 
 
 class ProjectCreateResponse(BaseModel):

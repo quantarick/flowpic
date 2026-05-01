@@ -11,7 +11,7 @@ import cv2
 import numpy as np
 from dataclasses import dataclass
 
-from app.models import AspectRatio, FaceRegion, Quality
+from app.models import AspectRatio, FaceRegion, FrameStyle, Quality
 
 RESOLUTIONS: dict[tuple[str, str], tuple[int, int]] = {
     ("16:9", "720p"): (1280, 720),
@@ -810,6 +810,47 @@ def remap_face_regions(
         )
         for f in face_regions
     ]
+
+
+def frame_fit(
+    image: np.ndarray,
+    target_w: int,
+    target_h: int,
+    frame_style: FrameStyle,
+    scale_factor: float = 1.05,
+    metadata: dict | None = None,
+) -> FitResult:
+    """Fit image inside target resolution with a decorative frame border.
+
+    Unlike smart_fit (which crops), this preserves 100% of the original image
+    by scaling it to fit *inside* the target and adding a styled border.
+
+    Returns a FitResult compatible with the Ken Burns pipeline.
+    """
+    from app.services.frame_styles import get_frame_style as _get_style
+
+    out_w = int(target_w * scale_factor)
+    out_h = int(target_h * scale_factor)
+
+    h, w = image.shape[:2]
+    style = _get_style(frame_style.value)
+    layout = style.compute_layout(w, h, out_w, out_h)
+    canvas = style.render(image, out_w, out_h, layout, metadata)
+
+    # Content center: center of the photo area (normalized 0..1)
+    cx = (layout.image_x + layout.image_w / 2) / out_w
+    cy = (layout.image_y + layout.image_h / 2) / out_h
+
+    return FitResult(
+        canvas=canvas,
+        x_offset=layout.image_x,
+        y_offset=layout.image_y,
+        fit_w=layout.image_w,
+        fit_h=layout.image_h,
+        scale=layout.scale,
+        content_center_x=cx,
+        content_center_y=cy,
+    )
 
 
 # Keep old name for any remaining references

@@ -187,19 +187,22 @@ def run_pipeline(
               f"{len(image_captions)} unique images after dedup")
 
     # === Step 3.6: Drop close-up portraits that can't be properly cropped ===
+    # Skip this filter in frame mode — nothing gets cropped, so close-ups are fine
+    from app.models import FitStrategy
     from app.services.smart_crop import check_face_fits, get_output_resolution
     out_w, out_h = get_output_resolution(config.aspect_ratio, config.quality)
-    before_closeup = len(image_captions)
-    image_captions = [
-        ic for ic in image_captions
-        if not ic.face_regions or not ic.img_width
-        or check_face_fits(ic.img_width, ic.img_height, ic.face_regions, out_w, out_h)
-    ]
-    dropped = before_closeup - len(image_captions)
-    if dropped:
-        logger.info(f"Dropped {dropped} close-up images that can't be properly cropped")
-        _progress(TaskStatus.CAPTIONING_IMAGES, 31, "Close-up filter",
-                  f"Dropped {dropped} uncropable close-ups, {len(image_captions)} remaining")
+    if config.fit_strategy != FitStrategy.FRAME:
+        before_closeup = len(image_captions)
+        image_captions = [
+            ic for ic in image_captions
+            if not ic.face_regions or not ic.img_width
+            or check_face_fits(ic.img_width, ic.img_height, ic.face_regions, out_w, out_h)
+        ]
+        dropped = before_closeup - len(image_captions)
+        if dropped:
+            logger.info(f"Dropped {dropped} close-up images that can't be properly cropped")
+            _progress(TaskStatus.CAPTIONING_IMAGES, 31, "Close-up filter",
+                      f"Dropped {dropped} uncropable close-ups, {len(image_captions)} remaining")
 
     # === Step 4: Semantic Matching ===
     matches = _load_cache(proj_dir, "matches", MatchResult)
@@ -279,6 +282,8 @@ def run_pipeline(
         aspect_ratio=config.aspect_ratio,
         quality=config.quality,
         fps=config.fps,
+        fit_strategy=config.fit_strategy,
+        frame_style=config.frame_style,
     )
 
     def render_progress(done: int, total: int):
@@ -401,18 +406,20 @@ def run_crop_only(
     # === Step 3.5: Deduplicate ===
     image_captions = _deduplicate_images(image_captions, images_dir)
 
-    # === Step 3.6: Drop uncropable close-ups ===
+    # === Step 3.6: Drop uncropable close-ups (skip in frame mode) ===
+    from app.models import FitStrategy
     from app.services.smart_crop import check_face_fits, get_output_resolution
     out_w, out_h = get_output_resolution(config.aspect_ratio, config.quality)
-    before_closeup = len(image_captions)
-    image_captions = [
-        ic for ic in image_captions
-        if not ic.face_regions or not ic.img_width
-        or check_face_fits(ic.img_width, ic.img_height, ic.face_regions, out_w, out_h)
-    ]
-    dropped = before_closeup - len(image_captions)
-    if dropped:
-        logger.info(f"Dropped {dropped} close-up images that can't be properly cropped")
+    if config.fit_strategy != FitStrategy.FRAME:
+        before_closeup = len(image_captions)
+        image_captions = [
+            ic for ic in image_captions
+            if not ic.face_regions or not ic.img_width
+            or check_face_fits(ic.img_width, ic.img_height, ic.face_regions, out_w, out_h)
+        ]
+        dropped = before_closeup - len(image_captions)
+        if dropped:
+            logger.info(f"Dropped {dropped} close-up images that can't be properly cropped")
 
     # === Step 4: Semantic Matching ===
     matches = _load_cache(proj_dir, "matches", MatchResult)
@@ -456,9 +463,11 @@ def run_crop_only(
                 progress_callback=review_progress,
             )
 
-    # === Step 6: Save cropped images (no video rendering) ===
-    _progress(TaskStatus.RENDERING, 65, "Generating crops", "Saving cropped images...")
-    from app.services.smart_crop import smart_fit
+    # === Step 6: Save cropped/framed images (no video rendering) ===
+    use_frame = config.fit_strategy == FitStrategy.FRAME
+    mode_label = "frames" if use_frame else "crops"
+    _progress(TaskStatus.RENDERING, 65, f"Generating {mode_label}", f"Saving {mode_label}...")
+    from app.services.smart_crop import smart_fit, frame_fit
     caption_map = {ic.filename: ic for ic in image_captions}
     crops_dir = output_dir / "crops"
     crops_dir.mkdir(parents=True, exist_ok=True)
@@ -470,29 +479,39 @@ def run_crop_only(
             continue
 
         cap = caption_map.get(match.image_filename)
-        face_regions = cap.face_regions if cap else []
-        focus_x = cap.focus_x if cap else 0.5
-        focus_y = cap.focus_y if cap else 0.5
-        fit_mode = cap.fit_mode if cap else "crop"
-        subject_box = None
-        if cap and cap.subject_x1 is not None:
-            subject_box = (cap.subject_x1, cap.subject_y1, cap.subject_x2, cap.subject_y2)
-
-        result = smart_fit(
-            img, out_w, out_h,
-            face_regions=face_regions,
-            focus_x=focus_x, focus_y=focus_y,
-            scale_factor=1.0, fit_mode=fit_mode,
-            subject_box=subject_box,
-            horizon_y=cap.horizon_y if cap else None,
-            people_centers=cap.people_centers if cap else None,
-        )
-
         stem = Path(match.image_filename).stem
-        cv2.imwrite(str(crops_dir / f"{i:03d}_{stem}_{fit_mode}.png"), result.canvas)
+
+        if use_frame:
+            result = frame_fit(
+                img, out_w, out_h,
+                frame_style=config.frame_style,
+                scale_factor=1.0,
+                metadata={"frame_number": i + 1},
+            )
+            cv2.imwrite(str(crops_dir / f"{i:03d}_{stem}_frame.png"), result.canvas)
+        else:
+            face_regions = cap.face_regions if cap else []
+            focus_x = cap.focus_x if cap else 0.5
+            focus_y = cap.focus_y if cap else 0.5
+            fit_mode = cap.fit_mode if cap else "crop"
+            subject_box = None
+            if cap and cap.subject_x1 is not None:
+                subject_box = (cap.subject_x1, cap.subject_y1, cap.subject_x2, cap.subject_y2)
+
+            result = smart_fit(
+                img, out_w, out_h,
+                face_regions=face_regions,
+                focus_x=focus_x, focus_y=focus_y,
+                scale_factor=1.0, fit_mode=fit_mode,
+                subject_box=subject_box,
+                horizon_y=cap.horizon_y if cap else None,
+                people_centers=cap.people_centers if cap else None,
+            )
+            cv2.imwrite(str(crops_dir / f"{i:03d}_{stem}_{fit_mode}.png"), result.canvas)
+
         pct = 65 + ((i + 1) / len(matches)) * 30
-        _progress(TaskStatus.RENDERING, pct, "Generating crops",
-                  f"{i + 1}/{len(matches)} images cropped")
+        _progress(TaskStatus.RENDERING, pct, f"Generating {mode_label}",
+                  f"{i + 1}/{len(matches)} images processed")
 
     crops_path = str(crops_dir)
     _progress(TaskStatus.DONE, 100, "Done", crops_path)
@@ -535,11 +554,13 @@ def run_crop_preview(
     # === Interleaved captioning (GPU) + cropping (CPU) ===
     from queue import Queue
     from threading import Thread
+    from app.models import FitStrategy
     from app.services.image_captioner import ImageCaptioner
-    from app.services.smart_crop import smart_fit, check_face_fits, get_output_resolution
+    from app.services.smart_crop import smart_fit, frame_fit, check_face_fits, get_output_resolution
 
     captioner = ImageCaptioner(model=config.vision_model)
     out_w, out_h = get_output_resolution(config.aspect_ratio, config.quality)
+    use_frame = config.fit_strategy == FitStrategy.FRAME
     crops_dir = output_dir / "crops"
     crops_dir.mkdir(parents=True, exist_ok=True)
 
@@ -564,15 +585,15 @@ def run_crop_preview(
         caption_queue.put(None)  # sentinel
 
     def _crop_consumer():
-        """Run on background thread — CPU-bound cropping consumes from queue."""
+        """Run on background thread — CPU-bound cropping/framing consumes from queue."""
         while True:
             item = caption_queue.get()
             if item is None:
                 break
             idx, cap = item
 
-            # Skip uncropable close-ups
-            if cap.face_regions and cap.img_width:
+            # Skip uncropable close-ups (only in crop mode)
+            if not use_frame and cap.face_regions and cap.img_width:
                 if not check_face_fits(cap.img_width, cap.img_height, cap.face_regions, out_w, out_h):
                     logger.info(f"Skipping close-up: {cap.filename}")
                     cropped_count[0] += 1
@@ -583,22 +604,32 @@ def run_crop_preview(
                 cropped_count[0] += 1
                 continue
 
-            subject_box = None
-            if cap.subject_x1 is not None:
-                subject_box = (cap.subject_x1, cap.subject_y1, cap.subject_x2, cap.subject_y2)
-
-            result = smart_fit(
-                img, out_w, out_h,
-                face_regions=cap.face_regions,
-                focus_x=cap.focus_x, focus_y=cap.focus_y,
-                scale_factor=1.0, fit_mode=cap.fit_mode,
-                subject_box=subject_box,
-                horizon_y=cap.horizon_y,
-                people_centers=cap.people_centers,
-            )
-
             stem = Path(cap.filename).stem
-            cv2.imwrite(str(crops_dir / f"{idx:03d}_{stem}_{cap.fit_mode}.png"), result.canvas)
+
+            if use_frame:
+                result = frame_fit(
+                    img, out_w, out_h,
+                    frame_style=config.frame_style,
+                    scale_factor=1.0,
+                    metadata={"frame_number": idx + 1},
+                )
+                cv2.imwrite(str(crops_dir / f"{idx:03d}_{stem}_frame.png"), result.canvas)
+            else:
+                subject_box = None
+                if cap.subject_x1 is not None:
+                    subject_box = (cap.subject_x1, cap.subject_y1, cap.subject_x2, cap.subject_y2)
+
+                result = smart_fit(
+                    img, out_w, out_h,
+                    face_regions=cap.face_regions,
+                    focus_x=cap.focus_x, focus_y=cap.focus_y,
+                    scale_factor=1.0, fit_mode=cap.fit_mode,
+                    subject_box=subject_box,
+                    horizon_y=cap.horizon_y,
+                    people_centers=cap.people_centers,
+                )
+                cv2.imwrite(str(crops_dir / f"{idx:03d}_{stem}_{cap.fit_mode}.png"), result.canvas)
+
             cropped_count[0] += 1
 
     # Start crop consumer in background thread

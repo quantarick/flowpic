@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
 import { useI18n } from "../i18n";
 import { fetchOllamaModels } from "../api/client";
-import type { AspectRatio, OllamaModel, ProjectConfig, Quality } from "../types";
+import type { AspectRatio, FitStrategy, FrameStyle, OllamaModel, ProjectConfig, Quality } from "../types";
 
-type ConfigField = "aspect_ratio" | "quality" | "vision_model" | "fps";
+type ConfigField = "aspect_ratio" | "quality" | "vision_model" | "fps" | "fit_strategy";
 
 interface Props {
   config: ProjectConfig;
@@ -136,6 +136,42 @@ export function ConfigPanel({ config, onChange, disabled, fields }: Props) {
             disabled={disabled}
             style={{ ...selectStyle, width: 60 }}
           />
+        </label>
+      )}
+
+      {show("fit_strategy") && (
+        <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {t.cfgFitStrategy}
+          <select
+            value={config.fit_strategy}
+            onChange={(e) =>
+              onChange({ fit_strategy: e.target.value as FitStrategy })
+            }
+            disabled={disabled}
+            style={selectStyle}
+          >
+            <option value="crop">{t.fitCrop}</option>
+            <option value="frame">{t.fitFrame}</option>
+          </select>
+        </label>
+      )}
+
+      {show("fit_strategy") && config.fit_strategy === "frame" && (
+        <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {t.cfgFrameStyle}
+          <select
+            value={config.frame_style}
+            onChange={(e) =>
+              onChange({ frame_style: e.target.value as FrameStyle })
+            }
+            disabled={disabled}
+            style={selectStyle}
+          >
+            <option value="film">{t.frameFilm}</option>
+            <option value="clean">{t.frameClean}</option>
+            <option value="polaroid">{t.framePolaroid}</option>
+            <option value="shadow">{t.frameShadow}</option>
+          </select>
         </label>
       )}
     </div>

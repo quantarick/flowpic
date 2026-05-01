@@ -13,13 +13,15 @@ from app.core.transitions import compute_crossfade_duration, crossfade_clips
 from app.models import (
     AspectRatio,
     AudioFeatures,
+    FitStrategy,
+    FrameStyle,
     ImageCaption,
     LocationGroup,
     MatchResult,
     Quality,
     SegmentEmotion,
 )
-from app.services.smart_crop import get_output_resolution, smart_fit, pan_fit, remap_face_regions
+from app.services.smart_crop import get_output_resolution, smart_fit, pan_fit, frame_fit, remap_face_regions
 from app.services.subtitle_renderer import (
     compute_title_font_size,
     generate_title_card,
@@ -71,10 +73,14 @@ class VideoGenerator:
         aspect_ratio: AspectRatio,
         quality: Quality,
         fps: int = 30,
+        fit_strategy: FitStrategy = FitStrategy.CROP,
+        frame_style: FrameStyle = FrameStyle.FILM,
     ):
         self.aspect_ratio = aspect_ratio
         self.quality = quality
         self.fps = fps
+        self.fit_strategy = fit_strategy
+        self.frame_style = frame_style
         self.out_w, self.out_h = get_output_resolution(aspect_ratio, quality)
         self.ken_burns = KenBurnsEngine(self.out_w, self.out_h)
 
@@ -166,7 +172,39 @@ class VideoGenerator:
             out_aspect = self.out_w / self.out_h
             use_pan = img_aspect / out_aspect < 0.65
 
-            if use_pan:
+            if self.fit_strategy == FitStrategy.FRAME:
+                # Frame mode: all images get decorative border, no cropping
+                fit_result = frame_fit(
+                    img, self.out_w, self.out_h,
+                    frame_style=self.frame_style,
+                    scale_factor=1.05,
+                    metadata={"frame_number": i + 1},
+                )
+
+                cv2.imwrite(
+                    str(crops_dir / f"{i:03d}_{stem}_frame.jpg"),
+                    fit_result.canvas,
+                )
+
+                canvas = cv2.cvtColor(fit_result.canvas, cv2.COLOR_BGR2RGB)
+
+                kb_params = self.ken_burns.generate_params(
+                    segment_index=i,
+                    arousal=seg_emo.arousal if seg_emo else 5.0,
+                    face_regions=[],
+                    source_w=canvas.shape[1],
+                    source_h=canvas.shape[0],
+                    content_center=(fit_result.content_center_x, fit_result.content_center_y),
+                    max_zoom_pct=0.05,
+                )
+
+                logger.info(
+                    f"Clip {i}: FRAME mode ({self.frame_style.value}) "
+                    f"canvas={canvas.shape[1]}x{canvas.shape[0]} "
+                    f"zoom={kb_params.zoom_start:.3f}→{kb_params.zoom_end:.3f}"
+                )
+
+            elif use_pan:
                 # Portrait image → pan mode: scale to fill width, pan vertically
                 pan_result = pan_fit(
                     img, self.out_w, self.out_h,

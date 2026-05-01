@@ -38,16 +38,17 @@ class KenBurnsEngine:
         source_w: int,
         source_h: int,
         content_center: tuple[float, float] = (0.5, 0.5),
+        max_zoom_pct: float = 0.07,
     ) -> KenBurnsParams:
         """Generate subtle zoom params for landscape crops.
 
         Source is already cropped to ~1.08x output size by smart_fit.
         We alternate zoom-in / zoom-out per segment.
-        Zoom range: 3-7% based on arousal (0-10 scale).
+        Zoom range: 3-max_zoom_pct based on arousal (0-10 scale).
         """
-        # Zoom magnitude: 3% at arousal=0, 7% at arousal=10
-        zoom_pct = 0.03 + (arousal / 10.0) * 0.04
-        zoom_pct = max(0.03, min(0.07, zoom_pct))
+        # Zoom magnitude: 3% at arousal=0, max_zoom_pct at arousal=10
+        zoom_pct = 0.03 + (arousal / 10.0) * (max_zoom_pct - 0.03)
+        zoom_pct = max(0.03, min(max_zoom_pct, zoom_pct))
 
         # Alternate direction per segment
         if segment_index % 2 == 0:
