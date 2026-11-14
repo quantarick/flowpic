@@ -17,7 +17,12 @@ export function VideoPreview({ videoUrl, taskId }: Props) {
         controls
         autoPlay
         style={{
-          width: "100%",
+          // Bounded both ways, so a tall phone video fits on screen
+          // instead of running far below the fold.
+          display: "block",
+          maxWidth: "100%",
+          maxHeight: "80vh",
+          margin: "0 auto",
           borderRadius: 12,
           background: "#000",
         }}

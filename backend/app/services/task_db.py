@@ -270,3 +270,51 @@ def _row_to_record(row: sqlite3.Row) -> TaskRecord:
         config=config,
         error_message=row["error_message"] if "error_message" in row.keys() else None,
     )
+
+
+def count_history() -> dict[str, int]:
+    """How many task records and published-photo records exist."""
+    conn = _get_conn()
+    try:
+        return {
+            "tasks": conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0],
+            "published": conn.execute("SELECT COUNT(*) FROM published_images").fetchone()[0],
+        }
+    finally:
+        conn.close()
+
+
+def clear_history() -> dict[str, int]:
+    """Delete every task record and every published-photo record. Returns how many of each."""
+    with _lock:
+        conn = _get_conn()
+        try:
+            tasks = conn.execute("DELETE FROM tasks").rowcount
+            published = conn.execute("DELETE FROM published_images").rowcount
+            conn.commit()
+            logger.info("Cleared %d task records and %d published-photo records", tasks, published)
+            return {"tasks": tasks, "published": published}
+        finally:
+            conn.close()
+
+
+def fail_unfinished(reason: str) -> int:
+    """Mark every task that has not finished as failed. Returns how many.
+
+    Called when the server starts. A task cannot outlive the process that ran
+    it, so anything still marked as running was cut off by a restart or a
+    crash, and would otherwise show as running for ever.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    with _lock:
+        conn = _get_conn()
+        try:
+            cursor = conn.execute(
+                "UPDATE tasks SET status = 'failed', finished_at = ?, error_message = ? "
+                "WHERE status NOT IN ('done', 'failed', 'cancelled')",
+                (now, reason),
+            )
+            conn.commit()
+            return cursor.rowcount
+        finally:
+            conn.close()

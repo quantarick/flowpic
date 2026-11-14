@@ -6,6 +6,7 @@ import { ImageUploader } from "./components/ImageUploader";
 import { LangSwitch } from "./components/LangSwitch";
 import { MusicUploader } from "./components/MusicUploader";
 import { ProgressBar } from "./components/ProgressBar";
+import { ResetButton } from "./components/ResetButton";
 import { TaskHistory } from "./components/TaskHistory";
 import { VideoPreview } from "./components/VideoPreview";
 import { useI18n } from "./i18n";
@@ -86,6 +87,16 @@ export default function App() {
     !isGenerating &&
     !project.loading;
 
+  // Back to an empty page. Used by "New Project" and after a reset.
+  const resetUi = () => {
+    project.newProject();
+    setShowCrops(false);
+    setCropTaskRunning(false);
+    setVideoTaskRunning(false);
+    setCrops([]);
+    setTab("crops");
+  };
+
   return (
     <div
       style={{
@@ -99,30 +110,23 @@ export default function App() {
     >
       <header style={{ textAlign: "center", marginBottom: 24, position: "relative" }}>
         <LangSwitch />
-        <button
-          onClick={() => {
-            project.newProject();
-            setShowCrops(false);
-            setCropTaskRunning(false);
-            setVideoTaskRunning(false);
-            setCrops([]);
-            setTab("crops");
-          }}
-          style={{
-            position: "absolute",
-            left: 0,
-            top: 8,
-            padding: "6px 14px",
-            fontSize: 13,
-            borderRadius: 6,
-            border: "1px solid #555",
-            background: "transparent",
-            color: "#aaa",
-            cursor: "pointer",
-          }}
-        >
-          + {t.btnNewProject}
-        </button>
+        <div style={{ position: "absolute", left: 0, top: 8, display: "flex", gap: 8 }}>
+          <button
+            onClick={resetUi}
+            style={{
+              padding: "6px 14px",
+              fontSize: 13,
+              borderRadius: 6,
+              border: "1px solid #555",
+              background: "transparent",
+              color: "#aaa",
+              cursor: "pointer",
+            }}
+          >
+            + {t.btnNewProject}
+          </button>
+          <ResetButton disabled={isGenerating} onDone={resetUi} />
+        </div>
         <h1 style={{ fontSize: 36, fontWeight: 700, margin: "0 0 8px" }}>
           {t.appTitle}
         </h1>
@@ -182,6 +186,7 @@ export default function App() {
             images={project.images}
             onUpload={project.uploadImages}
             disabled={isGenerating}
+            uploadProgress={project.uploadProgress}
           />
         </section>
 
@@ -266,7 +271,7 @@ export default function App() {
                 config={project.config}
                 onChange={project.updateConfig}
                 disabled={isGenerating}
-                fields={["aspect_ratio", "quality", "fps"]}
+                fields={["aspect_ratio", "quality", "video_style", "fps"]}
               />
             </section>
 

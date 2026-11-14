@@ -1,4 +1,4 @@
-export type AspectRatio = "16:9" | "21:9" | "9:16" | "1:1" | "4:3";
+export type AspectRatio = "16:9" | "21:9" | "9:16" | "9:19.5" | "3:4" | "1:1" | "4:3";
 export type Quality = "720p" | "1080p" | "2k" | "4k";
 export type FitStrategy = "crop" | "frame";
 export type FrameStyle = "film" | "clean" | "polaroid" | "shadow";
@@ -20,21 +20,61 @@ export interface ProjectConfig {
   aspect_ratio: AspectRatio;
   quality: Quality;
   fps: number;
+  // Vision LLM overrides. Both null means "use the server default".
+  vision_provider: string | null;
   vision_model: string | null;
   skip_crop_review: boolean;
   fit_strategy: FitStrategy;
   frame_style: FrameStyle;
+  // Name of a video style plugin, as listed by GET /api/styles.
+  video_style: string;
 }
 
-export interface OllamaModel {
+export interface VideoStyleInfo {
+  name: string;
+  label: Record<string, string>;
+  description: Record<string, string>;
+}
+
+export interface VideoStylesResponse {
+  default: string;
+  styles: VideoStyleInfo[];
+}
+
+export interface ResetPreview {
+  projects: number;
+  photos: number;
+  songs: number;
+  videos: number;
+  tasks: number;
+  published: number;
+  bytes: number;
+}
+
+export interface ResetResult {
+  projects_deleted: number;
+  tasks_deleted: number;
+  published_deleted: number;
+  bytes_freed: number;
+  // Ids of projects that could not be fully deleted because a file was in use.
+  failed: string[];
+}
+
+export interface LlmModel {
   name: string;
   size: number | null;
   parameter_size: string | null;
 }
 
-export interface OllamaModelsResponse {
-  default: string;
-  models: OllamaModel[];
+export interface LlmProviderInfo {
+  name: string;
+  configured: boolean;
+  models: LlmModel[];
+}
+
+export interface LlmModelsResponse {
+  default: { provider: string; model: string };
+  providers: LlmProviderInfo[];
 }
 
 export interface ProjectInfo {

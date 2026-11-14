@@ -159,7 +159,7 @@ def run_pipeline(
     _check_cancel()
 
     from app.services.image_captioner import ImageCaptioner
-    captioner = ImageCaptioner(model=config.vision_model)
+    captioner = ImageCaptioner(model=config.vision_model, provider=config.vision_provider)
 
     cached_captions = captioner.load_cached_captions(image_paths)
     if cached_captions is not None:
@@ -172,8 +172,9 @@ def run_pipeline(
         def caption_progress(done: int, total: int):
             pct = 16 + (done / total) * 14  # 16% to 30%
             step_pct = int(done / total * 100)
+            note = f" ({captioner.provider_note})" if captioner.provider_note else ""
             _progress(TaskStatus.CAPTIONING_IMAGES, pct, "Captioning images",
-                      f"{done}/{total} images ({step_pct}%)")
+                      f"{done}/{total} images ({step_pct}%){note}")
             _check_cancel()
 
         image_captions = captioner.caption_images(image_paths, progress_callback=caption_progress)
@@ -190,7 +191,10 @@ def run_pipeline(
     # Skip this filter in frame mode — nothing gets cropped, so close-ups are fine
     from app.models import FitStrategy
     from app.services.smart_crop import check_face_fits, get_output_resolution
+    from app.styles import get_style
     out_w, out_h = get_output_resolution(config.aspect_ratio, config.quality)
+    # A style with letterbox bars crops pictures to a wider area than the frame
+    out_w, out_h = get_style(config.video_style).picture_size(out_w, out_h)
     if config.fit_strategy != FitStrategy.FRAME:
         before_closeup = len(image_captions)
         image_captions = [
@@ -258,7 +262,7 @@ def run_pipeline(
         _check_cancel()
 
         from app.services.crop_reviewer import CropReviewer
-        reviewer = CropReviewer(model=config.vision_model)
+        reviewer = CropReviewer(model=config.vision_model, provider=config.vision_provider)
         person_count = sum(1 for ic in image_captions if ic.has_person)
         if person_count > 0:
             def review_progress(done, total):
@@ -284,6 +288,7 @@ def run_pipeline(
         fps=config.fps,
         fit_strategy=config.fit_strategy,
         frame_style=config.frame_style,
+        video_style=config.video_style,
     )
 
     def render_progress(done: int, total: int):
@@ -393,11 +398,12 @@ def run_crop_only(
     _progress(TaskStatus.CAPTIONING_IMAGES, 22, "Captioning images", f"0/{len(image_paths)} images...")
     _check_cancel()
     from app.services.image_captioner import ImageCaptioner
-    captioner = ImageCaptioner(model=config.vision_model)
+    captioner = ImageCaptioner(model=config.vision_model, provider=config.vision_provider)
 
     def caption_progress(done, total):
         pct = 22 + (done / total) * 20
-        _progress(TaskStatus.CAPTIONING_IMAGES, pct, "Captioning images", f"{done}/{total} images captioned")
+        note = f" ({captioner.provider_note})" if captioner.provider_note else ""
+        _progress(TaskStatus.CAPTIONING_IMAGES, pct, "Captioning images", f"{done}/{total} images captioned{note}")
         _check_cancel()
 
     image_captions = captioner.caption_images(image_paths, progress_callback=caption_progress)
@@ -457,7 +463,9 @@ def run_crop_only(
                 _progress(TaskStatus.REVIEWING_CROPS, pct, "Reviewing crops",
                           f"{done}/{total} person images reviewed")
                 _check_cancel()
-            image_captions = CropReviewer(model=config.vision_model).review_crops(
+            image_captions = CropReviewer(
+                model=config.vision_model, provider=config.vision_provider,
+            ).review_crops(
                 matches, image_captions, images_dir,
                 config.aspect_ratio, config.quality,
                 progress_callback=review_progress,
@@ -558,7 +566,7 @@ def run_crop_preview(
     from app.services.image_captioner import ImageCaptioner
     from app.services.smart_crop import smart_fit, frame_fit, check_face_fits, get_output_resolution
 
-    captioner = ImageCaptioner(model=config.vision_model)
+    captioner = ImageCaptioner(model=config.vision_model, provider=config.vision_provider)
     out_w, out_h = get_output_resolution(config.aspect_ratio, config.quality)
     use_frame = config.fit_strategy == FitStrategy.FRAME
     crops_dir = output_dir / "crops"
@@ -580,8 +588,9 @@ def run_crop_preview(
             caption_queue.put((idx, cap))
             captioned_count[0] = idx + 1
             pct = 5 + (captioned_count[0] / total) * 50
+            note = f" ({captioner.provider_note})" if captioner.provider_note else ""
             _progress(TaskStatus.CAPTIONING_IMAGES, pct, "Captioning & cropping",
-                      f"{captioned_count[0]}/{total} captioned, {cropped_count[0]}/{total} cropped")
+                      f"{captioned_count[0]}/{total} captioned, {cropped_count[0]}/{total} cropped{note}")
         caption_queue.put(None)  # sentinel
 
     def _crop_consumer():
@@ -706,7 +715,7 @@ def _run_lyrics_pipeline(
     _progress(TaskStatus.ANALYZING_LYRICS, 13, "Analyzing lyric emotions",
               f"Processing {len(lyrics_result.words)} words...")
 
-    # Step 3: Per-segment emotion analysis via Ollama
+    # Step 3: Per-segment emotion analysis via the text LLM
     from app.services.lyric_emotion_analyzer import LyricEmotionAnalyzer
     analyzer = LyricEmotionAnalyzer()
     try:

@@ -119,8 +119,12 @@ async def regenerate_crop(project_id: str, req: RegenerateCropRequest):
 
     # Re-caption with feedback
     from app.services.image_captioner import ImageCaptioner
-    captioner = ImageCaptioner(model=config.vision_model)
-    caption = captioner.caption_image(source_image, feedback=req.feedback)
+    from app.llm import LLMNotConfigured
+    captioner = ImageCaptioner(model=config.vision_model, provider=config.vision_provider)
+    try:
+        caption = captioner.caption_image(source_image, feedback=req.feedback)
+    except LLMNotConfigured as e:
+        raise HTTPException(400, str(e))
 
     # Re-crop
     import cv2

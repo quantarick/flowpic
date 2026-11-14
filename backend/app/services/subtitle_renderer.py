@@ -181,6 +181,20 @@ def generate_title_card(
     text_w = bbox[2] - bbox[0]
     text_h = bbox[3] - bbox[1]
 
+    # Shrink the text to fit the frame. The font size comes from the frame
+    # height, so on a narrow vertical frame a long place name would run off
+    # both sides.
+    max_text_w = int(w * 0.86)
+    if text_w > max_text_w and font_path:
+        fitted_size = max(16, int(font_size * max_text_w / text_w))
+        try:
+            font = ImageFont.truetype(font_path, fitted_size)
+            bbox = draw.textbbox((0, 0), text, font=font)
+            text_w = bbox[2] - bbox[0]
+            text_h = bbox[3] - bbox[1]
+        except Exception:
+            pass
+
     # Center both axes
     x = (w - text_w) // 2
     y = (h - text_h) // 2

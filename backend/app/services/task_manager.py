@@ -148,5 +148,17 @@ class TaskManager:
     def get_status(self, task_id: str) -> ProgressMessage | None:
         return self._progress.get(task_id)
 
+    def has_running(self) -> bool:
+        """True while any submitted task has not finished."""
+        return any(not future.done() for future in list(self._futures.values()))
+
+    def forget_finished(self) -> None:
+        """Drop the in-memory progress of finished tasks. Used after a reset."""
+        with self._lock:
+            for task_id in [tid for tid, future in self._futures.items() if future.done()]:
+                self._futures.pop(task_id, None)
+                self._progress.pop(task_id, None)
+                self._cancelled.discard(task_id)
+
     def shutdown(self):
         self._executor.shutdown(wait=False)

@@ -16,13 +16,18 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
 from app.dependencies import get_task_manager
-from app.routers import upload, project, generate, download, ollama, copywriting, xhs_publish
+from app.routers import upload, project, generate, download, llm, ollama, reset, styles, copywriting, xhs_publish
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup: ensure data dir exists
     settings.data_dir.mkdir(parents=True, exist_ok=True)
+    # No task survives a restart, so anything still marked as running is dead.
+    from app.services.task_db import fail_unfinished
+    interrupted = fail_unfinished("Interrupted: the server stopped while this task was running")
+    if interrupted:
+        logging.getLogger(__name__).info("Marked %d interrupted task(s) as failed", interrupted)
     yield
     # Shutdown: clean up task manager
     tm = get_task_manager()
@@ -49,7 +54,10 @@ app.include_router(project.router, prefix="/api/project", tags=["project"])
 app.include_router(generate.router, prefix="/api", tags=["generate"])
 app.include_router(generate.ws_router, prefix="/ws", tags=["websocket"])
 app.include_router(download.router, prefix="/api", tags=["download"])
+app.include_router(llm.router, prefix="/api/llm", tags=["llm"])
 app.include_router(ollama.router, prefix="/api/ollama", tags=["ollama"])
+app.include_router(styles.router, prefix="/api", tags=["styles"])
+app.include_router(reset.router, prefix="/api", tags=["reset"])
 app.include_router(copywriting.router, prefix="/api", tags=["copywriting"])
 app.include_router(xhs_publish.router, prefix="/api", tags=["xhs"])
 

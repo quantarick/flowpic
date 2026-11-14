@@ -11,8 +11,38 @@ const en = {
   hintPreviewCrops: "Tip: Preview crops first in the Crops tab to review framing before generating.",
   btnNewProject: "New Project",
 
+  // Reset
+  btnReset: "Reset",
+  resetTitle: "Delete everything?",
+  resetCounting: "Counting what is stored…",
+  resetNothing: "Nothing is stored, so there is nothing to delete.",
+  resetSummary: (projects: number, photos: number, songs: number, videos: number, tasks: number, size: string) =>
+    `This deletes ${projects} project${projects !== 1 ? "s" : ""}: ${photos} photos, ${songs} songs, ${videos} rendered videos, every caption and cache, and ${tasks} history entries. ${size} in total.`,
+  resetWarning: "This cannot be undone.",
+  resetKept: "Your Xiaohongshu login and style profile are kept. The record of photos already published is cleared.",
+  resetConfirm: "Delete everything",
+  resetCancel: "Cancel",
+  resetClose: "Close",
+  resetWorking: "Deleting…",
+  resetBusy: "A task is running. Cancel it or wait for it to finish first.",
+  resetPartly: (n: number) =>
+    `${n} project${n !== 1 ? "s" : ""} could not be fully deleted because a file is in use. Close any open video and try again.`,
+  resetFailed: (msg: string) => `Reset failed: ${msg}`,
+
   // ImageUploader
-  imgDropHint: "Drop images here or click to browse",
+  imgDropHint: "Drop images or a folder here, or click to browse",
+  imgPickFolder: "Import a folder",
+  imgScanning: "Reading the folder…",
+  imgUploadProgress: (done: number, total: number) => `Uploading ${done} of ${total}…`,
+  imgImported: (n: number, folders: number) =>
+    folders > 0
+      ? `Added ${n} image${n !== 1 ? "s" : ""} from ${folders} folder${folders !== 1 ? "s" : ""}.`
+      : `Added ${n} image${n !== 1 ? "s" : ""}.`,
+  imgNothingFound: "No JPG, PNG or WebP images were found.",
+  imgSkippedType: (n: number, kinds: string) =>
+    `Skipped ${n} file${n !== 1 ? "s" : ""} that ${n !== 1 ? "are" : "is"} not JPG, PNG or WebP (${kinds}).`,
+  imgSkippedLarge: (n: number) => `Skipped ${n} image${n !== 1 ? "s" : ""} over 50MB.`,
+  imgLeftOut: (n: number, max: number) => `Left out ${n}: a project holds ${max} images.`,
   imgFormatHint: "JPG, PNG, WebP - up to 100 images, 50MB each",
   imgUploaded: (n: number) => `${n} image${n !== 1 ? "s" : ""} uploaded`,
   imgAddMore: "Click or drop to add more",
@@ -27,6 +57,8 @@ const en = {
   cfgAspectRatio: "Aspect Ratio:",
   cfgQuality: "Quality:",
   cfgVisionModel: "Vision Model:",
+  cfgNoApiKey: "no API key",
+  cfgVideoStyle: "Video Style:",
   cfgFps: "FPS:",
   cfgFitStrategy: "Fit Mode:",
   fitCrop: "Crop",
@@ -39,6 +71,8 @@ const en = {
   arLandscape: "16:9 (Landscape)",
   arUltrawide: "21:9 (Ultrawide)",
   arPortrait: "9:16 (Portrait)",
+  arPhone: "9:19.5 (iPhone full screen)",
+  arPortraitPhoto: "3:4 (Vertical photo)",
   arSquare: "1:1 (Square)",
   arClassic: "4:3 (Classic)",
   q720: "720p (SD)",

@@ -26,9 +26,14 @@ from app.services.subtitle_renderer import (
     compute_title_font_size,
     generate_title_card,
 )
+from app.styles import DEFAULT_STYLE, get_style
 
 logger = logging.getLogger(__name__)
 _use_gpu = torch.cuda.is_available()
+
+# Put the MP4 index at the front of the file, so a phone or browser can start
+# playing while the rest is still downloading.
+_FASTSTART = ["-movflags", "+faststart"]
 
 
 def _pick_encoder(width: int = 0, height: int = 0) -> tuple[str, list[str]]:
@@ -57,6 +62,7 @@ def _pick_encoder(width: int = 0, height: int = 0) -> tuple[str, list[str]]:
         return "h264_nvenc", [
             "-pix_fmt", "yuv420p",
             "-preset", "p4", "-rc", "vbr", "-cq", "23",
+            *_FASTSTART,
         ]
     else:
         if width > NVENC_MAX_DIM or height > NVENC_MAX_DIM:
@@ -64,7 +70,7 @@ def _pick_encoder(width: int = 0, height: int = 0) -> tuple[str, list[str]]:
                         width, height, NVENC_MAX_DIM)
         else:
             logger.info("Using CPU encoder (libx264)")
-        return "libx264", ["-pix_fmt", "yuv420p"]
+        return "libx264", ["-pix_fmt", "yuv420p", *_FASTSTART]
 
 
 class VideoGenerator:
@@ -75,14 +81,45 @@ class VideoGenerator:
         fps: int = 30,
         fit_strategy: FitStrategy = FitStrategy.CROP,
         frame_style: FrameStyle = FrameStyle.FILM,
+        video_style: str = DEFAULT_STYLE,
     ):
         self.aspect_ratio = aspect_ratio
         self.quality = quality
         self.fps = fps
         self.fit_strategy = fit_strategy
         self.frame_style = frame_style
+        self.style = get_style(video_style)
         self.out_w, self.out_h = get_output_resolution(aspect_ratio, quality)
-        self.ken_burns = KenBurnsEngine(self.out_w, self.out_h)
+        # Pictures are fitted and animated inside the picture area. It equals
+        # the output frame unless the style adds letterbox bars.
+        self.pic_w, self.pic_h = self.style.picture_size(self.out_w, self.out_h)
+        self.ken_burns = KenBurnsEngine(self.pic_w, self.pic_h)
+
+    def _grade_bgr(self, img: np.ndarray) -> np.ndarray:
+        """Apply the style's grade to a BGR image."""
+        graded = self.style.grade(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+        return cv2.cvtColor(graded, cv2.COLOR_RGB2BGR)
+
+    def _title_background(self, canvas: np.ndarray) -> np.ndarray:
+        """Centre-crop a fit canvas to the picture area, for use behind a title card.
+
+        Fit canvases are larger than the picture area (headroom for Ken Burns
+        motion, or a tall strip for panning). A title card is shown as a frame
+        and blended with frames, so it has to be exactly the picture size.
+        """
+        h, w = canvas.shape[:2]
+        target = self.pic_w / self.pic_h
+        if w / h > target:
+            crop_w = max(1, int(round(h * target)))
+            x0 = (w - crop_w) // 2
+            canvas = canvas[:, x0:x0 + crop_w]
+        else:
+            crop_h = max(1, int(round(w / target)))
+            y0 = (h - crop_h) // 2
+            canvas = canvas[y0:y0 + crop_h]
+        return cv2.resize(
+            np.ascontiguousarray(canvas), (self.pic_w, self.pic_h), interpolation=cv2.INTER_AREA,
+        )
 
     def generate(
         self,
@@ -138,6 +175,14 @@ class VideoGenerator:
 
         logger.info(f"Rendering with GPU: {_use_gpu}")
 
+        # Screen-fixed finishing (bars, vignette, grain) for every output frame.
+        # None when the style has none, which costs nothing per frame.
+        finish_frame = self.style.frame_finisher(self.out_w, self.out_h, self.fps)
+        logger.info(
+            f"Video style: {self.style.name} "
+            f"(picture area {self.pic_w}x{self.pic_h} in {self.out_w}x{self.out_h})"
+        )
+
         for i, match in enumerate(matches):
             seg_emo = emotion_map.get(match.segment_index)
             if seg_emo is None:
@@ -169,13 +214,14 @@ class VideoGenerator:
             # Detect orientation mismatch: portrait image in landscape output
             img_h, img_w = img.shape[:2]
             img_aspect = img_w / img_h
-            out_aspect = self.out_w / self.out_h
+            out_aspect = self.pic_w / self.pic_h
             use_pan = img_aspect / out_aspect < 0.65
 
             if self.fit_strategy == FitStrategy.FRAME:
-                # Frame mode: all images get decorative border, no cropping
+                # Frame mode: all images get decorative border, no cropping.
+                # The picture is graded before framing so the border keeps its own colour.
                 fit_result = frame_fit(
-                    img, self.out_w, self.out_h,
+                    self._grade_bgr(img), self.pic_w, self.pic_h,
                     frame_style=self.frame_style,
                     scale_factor=1.05,
                     metadata={"frame_number": i + 1},
@@ -207,20 +253,20 @@ class VideoGenerator:
             elif use_pan:
                 # Portrait image → pan mode: scale to fill width, pan vertically
                 pan_result = pan_fit(
-                    img, self.out_w, self.out_h,
+                    img, self.pic_w, self.pic_h,
                     face_regions=face_regions,
                 )
 
                 # Save debug crop: center frame of the oversized canvas
-                center_y = max(0, (pan_result.canvas_h - self.out_h) // 2)
-                debug_crop = pan_result.canvas[center_y:center_y + self.out_h, 0:self.out_w]
+                center_y = max(0, (pan_result.canvas_h - self.pic_h) // 2)
+                debug_crop = pan_result.canvas[center_y:center_y + self.pic_h, 0:self.pic_w]
                 cv2.imwrite(
                     str(crops_dir / f"{i:03d}_{stem}_pan.jpg"),
                     debug_crop,
                 )
 
-                # Convert to RGB for moviepy/Ken Burns
-                canvas = cv2.cvtColor(pan_result.canvas, cv2.COLOR_BGR2RGB)
+                # Convert to RGB for moviepy/Ken Burns, then apply the style's look
+                canvas = self.style.grade(cv2.cvtColor(pan_result.canvas, cv2.COLOR_BGR2RGB))
 
                 kb_params = self.ken_burns.generate_pan_params(
                     segment_index=i,
@@ -239,7 +285,7 @@ class VideoGenerator:
             else:
                 # Landscape/square image → crop mode with headroom for zoom
                 fit_result = smart_fit(
-                    img, self.out_w, self.out_h,
+                    img, self.pic_w, self.pic_h,
                     face_regions=face_regions,
                     focus_x=focus_x,
                     focus_y=focus_y,
@@ -257,8 +303,8 @@ class VideoGenerator:
                     fit_result.canvas,
                 )
 
-                # Convert to RGB for moviepy/Ken Burns rendering
-                canvas = cv2.cvtColor(fit_result.canvas, cv2.COLOR_BGR2RGB)
+                # Convert to RGB for moviepy/Ken Burns rendering, then apply the style's look
+                canvas = self.style.grade(cv2.cvtColor(fit_result.canvas, cv2.COLOR_BGR2RGB))
 
                 # Remap face regions to canvas coordinates
                 canvas_faces = remap_face_regions(face_regions, fit_result)
@@ -299,7 +345,9 @@ class VideoGenerator:
             if i in title_card_map:
                 place_name = title_card_map[i]
                 logger.info(f"Generating title card for clip {i}: '{place_name}' (seg_duration={seg_duration:.2f}s)")
-                title_img = generate_title_card(canvas, place_name, title_font_size, avg_valence, avg_arousal)
+                title_img = generate_title_card(
+                    self._title_background(canvas), place_name, title_font_size, avg_valence, avg_arousal,
+                )
                 title_duration = min(2.0, seg_duration * 0.4)
                 fade_duration = 0.5
                 _base_make_frame = make_frame
@@ -326,6 +374,13 @@ class VideoGenerator:
                     else:
                         # Normal Ken Burns frame
                         return _base(t)
+
+            # Finish every frame, title card included, with the style's bars, vignette and grain
+            if finish_frame is not None:
+                _unfinished = make_frame
+
+                def make_frame(t, _base=_unfinished, _finish=finish_frame):
+                    return _finish(_base(t), t)
 
             clip = VideoClip(make_frame, duration=seg_duration).with_fps(self.fps)
             clips.append(clip)

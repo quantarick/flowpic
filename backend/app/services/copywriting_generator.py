@@ -1,14 +1,14 @@
-"""Xiaohongshu copywriting generator using Claude API."""
+"""Xiaohongshu copywriting generator using the copywriting LLM."""
 
 from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 
-import anthropic
-
 from app.config import settings
+from app.llm import Role, get_llm, parse_json_object
 from app.models import CopywritingResult
 
 logger = logging.getLogger(__name__)
@@ -118,10 +118,30 @@ def _load_style_profile() -> str | None:
         return None
 
 
+def _fix_unescaped_quotes(s: str) -> str:
+    """Fix unescaped double quotes inside JSON string values."""
+    # Match content between key-value quote pairs:
+    # "key": "value with "unescaped" quotes"
+    # Strategy: find each "key": "..." pattern and escape inner quotes
+    def fix_value(m):
+        prefix = m.group(1)  # "key": "
+        content = m.group(2)  # value content
+        suffix = m.group(3)  # closing pattern
+        fixed = content.replace('"', '\u201c').replace('"', '\u201d')
+        return prefix + fixed + suffix
+    # Match "key": "value" where value may contain unescaped quotes
+    return re.sub(
+        r'("(?:title|description)":\s*")(.*?)("\s*[,}])',
+        fix_value,
+        s,
+        flags=re.DOTALL,
+    )
+
+
 def generate_copywriting(project_dir: Path, hint: str = "") -> CopywritingResult:
-    """Call Claude API to generate Xiaohongshu copywriting."""
-    if not settings.anthropic_api_key:
-        raise ValueError("FLOWPIC_ANTHROPIC_API_KEY not configured")
+    """Ask the copywriting LLM for Xiaohongshu copywriting."""
+    llm = get_llm(Role.COPYWRITING)
+    llm.ensure_configured()
 
     captions = _load_captions(project_dir)
     if not captions:
@@ -143,67 +163,18 @@ def generate_copywriting(project_dir: Path, hint: str = "") -> CopywritingResult
     if hint.strip():
         system += f"\n\n【用户额外要求——必须遵循】\n{hint.strip()}"
 
-    client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
-
-    logger.info("Calling Claude API for copywriting (model=%s)", settings.copywriting_model)
+    logger.info("Calling %s for copywriting (model=%s)", llm.name, llm.model)
     logger.info("System prompt:\n%s", system)
     logger.info("User content:\n%s", user_content)
-    response = client.messages.create(
-        model=settings.copywriting_model,
-        max_tokens=2048,
-        system=system,
-        messages=[{"role": "user", "content": user_content}],
-    )
+    text = llm.generate(user_content, system=system, max_tokens=2048)
+    logger.info("%s raw response:\n%s", llm.name, text[:500])
 
-    text = response.content[0].text.strip()
-    logger.info("Claude raw response:\n%s", text[:500])
-
-    # Parse JSON from response — handle markdown fences and minor issues
-    import re
-
-    # Extract content between markdown code fences, or use raw text
-    fence_match = re.search(r"```(?:json)?\s*\n(.*?)\n\s*```", text, re.DOTALL)
-    cleaned = fence_match.group(1).strip() if fence_match else text.strip()
-
-    def _try_parse(s: str) -> dict | None:
-        try:
-            return json.loads(s, strict=False)
-        except json.JSONDecodeError:
-            return None
-
-    def _fix_unescaped_quotes(s: str) -> str:
-        """Fix unescaped double quotes inside JSON string values."""
-        # Match content between key-value quote pairs:
-        # "key": "value with "unescaped" quotes"
-        # Strategy: find each "key": "..." pattern and escape inner quotes
-        def fix_value(m):
-            prefix = m.group(1)  # "key": "
-            content = m.group(2)  # value content
-            suffix = m.group(3)  # closing pattern
-            fixed = content.replace('"', '\u201c').replace('"', '\u201d')
-            return prefix + fixed + suffix
-        # Match "key": "value" where value may contain unescaped quotes
-        return re.sub(
-            r'("(?:title|description)":\s*")(.*?)("\s*[,}])',
-            fix_value,
-            s,
-            flags=re.DOTALL,
-        )
-
-    data = _try_parse(cleaned) or _try_parse(text)
-
+    # Parse JSON from the reply: fences, stray prose, then unescaped quotes
+    data = parse_json_object(text)
     if data is None:
-        # Try fixing unescaped quotes
-        data = _try_parse(_fix_unescaped_quotes(cleaned))
-
+        data = parse_json_object(_fix_unescaped_quotes(text))
     if data is None:
-        # Extract the outermost {...} block
-        m = re.search(r"\{.*\}", text, re.DOTALL)
-        if m:
-            data = _try_parse(m.group()) or _try_parse(_fix_unescaped_quotes(m.group()))
-
-    if data is None:
-        raise ValueError(f"Claude returned non-JSON response: {text[:300]}")
+        raise ValueError(f"{llm.name} returned non-JSON response: {text[:300]}")
 
     result = CopywritingResult(
         title=data.get("title", ""),

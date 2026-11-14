@@ -49,8 +49,12 @@ async def create_project():
 
 @router.get("/active", response_model=Optional[ProjectInfo])
 async def get_active_project():
-    """Find the most recent project that has uploads but no completed task,
-    i.e. either never started or still running."""
+    """Find the most recent project the user is still working on.
+
+    That is a project with uploads that was never run, is running now, or
+    whose latest run failed or was cancelled. A project whose latest run
+    completed is finished and is not reopened.
+    """
     from app.services.task_db import list_tasks
 
     data_dir = settings.data_dir
@@ -72,6 +76,13 @@ async def get_active_project():
     for pid, tasks in project_tasks.items():
         if all(t.status.value in terminal for t in tasks):
             finished_project_ids.add(pid)
+    # A run that failed or was cancelled leaves the project unfinished: the
+    # user will want it back after a reload, to change a setting and try again.
+    unfinished_project_ids = {
+        pid
+        for pid, tasks in project_tasks.items()
+        if max(tasks, key=lambda t: t.created_at).status.value in ("failed", "cancelled")
+    }
 
     # Scan project directories, find candidates
     candidates = []
@@ -89,7 +100,7 @@ async def get_active_project():
         pid = d.name
         has_active_task = pid in active_project_ids
         has_no_task = pid not in project_tasks
-        if has_active_task or has_no_task:
+        if has_active_task or has_no_task or pid in unfinished_project_ids:
             meta = json.loads(meta_path.read_text())
             created = meta.get("created_at", "")
             candidates.append((created, pid, d, meta, image_count))

@@ -20,6 +20,10 @@ function saveSession(projectId: string | null, taskId: string | null) {
 
 const TERMINAL_STATUSES = new Set(["done", "failed", "cancelled"]);
 
+// Images go up a few at a time. A folder of phone photos can be hundreds of
+// megabytes, which is too much for one request, and batches give progress to show.
+const UPLOAD_BATCH = 8;
+
 export interface ProjectState {
   projectId: string | null;
   images: string[];
@@ -31,16 +35,20 @@ export interface ProjectState {
   videoUrl: string | null;
   error: string | null;
   loading: boolean;
+  // Set while images are being uploaded in batches.
+  uploadProgress: { done: number; total: number } | null;
 }
 
 const defaultConfig: ProjectConfig = {
   aspect_ratio: "16:9",
   quality: "720p",
   fps: 30,
+  vision_provider: null,
   vision_model: null,
   skip_crop_review: true,
   fit_strategy: "crop",
   frame_style: "film",
+  video_style: "natural",
 };
 
 export function useProject() {
@@ -55,6 +63,7 @@ export function useProject() {
     videoUrl: null,
     error: null,
     loading: true, // loading while checking for active project
+    uploadProgress: null,
   });
 
   // Restore project and active task on mount
@@ -145,19 +154,26 @@ export function useProject() {
         pid = await createProject();
         if (!pid) return;
       }
-      setState((s) => ({ ...s, loading: true, error: null }));
+      const total = files.length;
+      setState((s) => ({ ...s, loading: true, error: null, uploadProgress: { done: 0, total } }));
       try {
-        const res = await api.uploadImages(pid, files);
-        setState((s) => ({
-          ...s,
-          projectId: pid,
-          images: [...s.images, ...res.filenames],
-          loading: false,
-        }));
+        for (let start = 0; start < total; start += UPLOAD_BATCH) {
+          const res = await api.uploadImages(pid, files.slice(start, start + UPLOAD_BATCH));
+          const done = Math.min(start + UPLOAD_BATCH, total);
+          setState((s) => ({
+            ...s,
+            projectId: pid,
+            images: [...s.images, ...res.filenames],
+            uploadProgress: { done, total },
+          }));
+        }
+        setState((s) => ({ ...s, loading: false, uploadProgress: null }));
       } catch (e) {
+        // Batches already sent stay in the project; the rest is not uploaded.
         setState((s) => ({
           ...s,
           loading: false,
+          uploadProgress: null,
           error: (e as Error).message,
         }));
       }
@@ -309,6 +325,7 @@ export function useProject() {
       videoUrl: null,
       loading: false,
       error: null,
+      uploadProgress: null,
     });
   }, []);
 

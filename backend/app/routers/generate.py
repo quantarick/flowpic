@@ -37,6 +37,13 @@ async def generate_video(
         meta = json.loads(meta_path.read_text())
         config = ProjectConfig(**meta.get("config", {}))
 
+    # Reject an unknown style now, not after minutes of analysis
+    from app.styles import get_style
+    try:
+        get_style(config.video_style)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
     task_id = uuid.uuid4().hex[:16]
 
     # Persist task record

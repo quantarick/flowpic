@@ -1,13 +1,16 @@
 import type {
   CopywritingResult,
   GenerateResponse,
+  LlmModelsResponse,
   MusicUploadResponse,
-  OllamaModelsResponse,
   ProjectConfig,
   ProjectInfo,
   PublishedImageInfo,
+  ResetPreview,
+  ResetResult,
   TaskRecord,
   UploadResponse,
+  VideoStylesResponse,
   XhsCookieStatus,
   XhsPublishResult,
   XhsStyleProfile,
@@ -100,8 +103,20 @@ export async function retryTask(taskId: string): Promise<GenerateResponse> {
   return request(`/tasks/${taskId}/retry`, { method: "POST" });
 }
 
-export async function fetchOllamaModels(): Promise<OllamaModelsResponse> {
-  return request("/ollama/models");
+export async function fetchLlmModels(): Promise<LlmModelsResponse> {
+  return request("/llm/models");
+}
+
+export async function fetchVideoStyles(): Promise<VideoStylesResponse> {
+  return request("/styles");
+}
+
+export async function fetchResetPreview(): Promise<ResetPreview> {
+  return request("/reset/preview");
+}
+
+export async function resetEverything(): Promise<ResetResult> {
+  return request("/reset", { method: "POST" });
 }
 
 export async function cropPreview(

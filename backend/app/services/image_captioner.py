@@ -1,6 +1,5 @@
-"""Image captioning via Ollama moondream + person detection via OpenCV."""
+"""Image captioning via the vision LLM + person detection via OpenCV."""
 
-import base64
 import json
 import logging
 import re
@@ -11,10 +10,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import cv2
-import httpx
 import numpy as np
 
 from app.config import settings
+from app.llm import ImageInput, LLMNotConfigured, LLMProvider, LLMTimeout, Role, get_llm
 from app.models import FaceRegion, ImageCaption
 
 BASE_PROMPT = (
@@ -108,10 +107,43 @@ BASE_PROMPT = (
 
 
 class ImageCaptioner:
-    def __init__(self, model: str | None = None):
+    def __init__(
+        self,
+        model: str | None = None,
+        provider: str | None = None,
+        llm: LLMProvider | None = None,
+    ):
+        """`model` and `provider` are per-project overrides of the vision LLM.
+
+        Pass `llm` to supply a ready provider instead (used in tests).
+        """
         self._face_cascade = None
         self._hog_detector = None
-        self._model = model or settings.ollama_model
+        self._model_override = model
+        self._provider_override = provider
+        self._llm = llm
+        # OpenCV's cascade detector is not safe to call from two threads at
+        # once, so detection takes turns while the LLM calls run in parallel.
+        self._cv_lock = threading.Lock()
+
+    def _get_llm(self) -> LLMProvider:
+        # Built on first use, so loading cached captions needs no provider.
+        if self._llm is None:
+            self._llm = get_llm(
+                Role.VISION,
+                provider=self._provider_override,
+                model=self._model_override,
+            )
+        return self._llm
+
+    @property
+    def _model(self) -> str:
+        return self._get_llm().model
+
+    @property
+    def provider_note(self) -> str:
+        """Empty normally. Says so when captions are coming from the fallback model."""
+        return getattr(self._llm, "note", "") if self._llm is not None else ""
 
     def _get_face_cascade(self) -> cv2.CascadeClassifier:
         if self._face_cascade is None:
@@ -130,7 +162,7 @@ class ImageCaptioner:
     _valid_extensions = {".jpg", ".jpeg", ".png", ".webp"}
 
     def caption_image(self, image_path: Path, feedback: str | None = None) -> ImageCaption:
-        """Generate caption for a single image using Ollama + detect faces/bodies.
+        """Generate caption for a single image using the vision LLM + detect faces/bodies.
 
         If feedback is provided, skip cache read and re-call the LLM with the
         feedback injected into the prompt. The old cache file is deleted first.
@@ -156,10 +188,11 @@ class ImageCaptioner:
             return ImageCaption(**data)
 
         # Step 1: Run CV detectors FIRST
-        logger.info(f"[{image_path.name}] Step 1: detecting faces...")
-        face_regions = self._detect_faces(image_path)
-        logger.info(f"[{image_path.name}] Step 1: detecting bodies...")
-        body_rects = self._detect_bodies(image_path)
+        with self._cv_lock:
+            logger.info(f"[{image_path.name}] Step 1: detecting faces...")
+            face_regions = self._detect_faces(image_path)
+            logger.info(f"[{image_path.name}] Step 1: detecting bodies...")
+            body_rects = self._detect_bodies(image_path)
         logger.info(f"[{image_path.name}] Step 1 done: {len(face_regions)} faces, {len(body_rects)} bodies")
 
         # Read image dimensions and filter tiny false-positive faces
@@ -179,8 +212,8 @@ class ImageCaptioner:
         prompt = self._build_prompt(face_regions, body_rects, image_path, feedback=feedback)
 
         # Step 3: Call LLM with enriched prompt
-        logger.info(f"[{image_path.name}] Step 3: calling Ollama... (prompt {len(prompt)} chars, feedback={'yes' if feedback else 'no'})")
-        info = self._call_ollama(image_path, prompt)
+        logger.info(f"[{image_path.name}] Step 3: calling vision LLM... (prompt {len(prompt)} chars, feedback={'yes' if feedback else 'no'})")
+        info = self._call_llm(image_path, prompt)
         logger.info(f"[{image_path.name}] Step 3 done: caption received")
 
         # Step 4: Combine signals — require CV confirmation for person
@@ -258,11 +291,11 @@ class ImageCaptioner:
             place_name=place_name,
         )
 
-        # Cache result (skip if Ollama returned an error)
+        # Cache result (skip if the vision LLM returned an error)
         if not info.get("_error"):
             cache_file.write_text(result.model_dump_json(), encoding="utf-8")
         else:
-            logger.warning(f"Skipping cache for {image_path.name} due to Ollama error")
+            logger.warning(f"Skipping cache for {image_path.name} due to vision LLM error")
         return result
 
     def caption_images(
@@ -270,22 +303,37 @@ class ImageCaptioner:
         image_paths: list[Path],
         progress_callback=None,
     ) -> list[ImageCaption]:
-        """Caption multiple images in parallel to maximize GPU utilization."""
+        """Caption multiple images, several at once when the provider can take it.
+
+        `FLOWPIC_CAPTION_PARALLEL` sets how many; 0 lets the provider decide.
+        The first error that stops the job (cancel, missing key, spent quota)
+        also stops the photos still waiting, so they do not each fail in turn.
+        """
         total = len(image_paths)
         results: dict[int, ImageCaption] = {}
         lock = threading.Lock()
+        stop = threading.Event()
         done_count = 0
+
+        workers = settings.caption_parallel or self._get_llm().parallel_requests
+        logger.info(f"Captioning {total} images, {workers} at a time")
 
         def _process(idx: int, path: Path) -> None:
             nonlocal done_count
-            caption = self.caption_image(path)
-            with lock:
-                results[idx] = caption
-                done_count += 1
-                if progress_callback:
-                    progress_callback(done_count, total)
+            if stop.is_set():
+                return
+            try:
+                caption = self.caption_image(path)
+                with lock:
+                    results[idx] = caption
+                    done_count += 1
+                    if progress_callback:
+                        progress_callback(done_count, total)
+            except BaseException:
+                stop.set()
+                raise
 
-        with ThreadPoolExecutor(max_workers=settings.caption_parallel) as pool:
+        with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
             futures = [
                 pool.submit(_process, i, p) for i, p in enumerate(image_paths)
             ]
@@ -384,9 +432,6 @@ class ImageCaptioner:
 
     # --- LLM ---
 
-    # Models that only support /api/generate (not /api/chat)
-    _generate_only_models = {"moondream", "qwen2.5vl"}
-
     _default_info = {
         "caption": "A photograph with various visual elements.",
         "focus_x": 0.5,
@@ -394,61 +439,28 @@ class ImageCaptioner:
         "has_person": False,
     }
 
-    def _call_ollama(self, image_path: Path, prompt: str) -> dict:
-        """Call Ollama API to get caption + subject position + person detection.
+    def _call_llm(self, image_path: Path, prompt: str) -> dict:
+        """Ask the vision LLM for caption + subject position + person detection.
 
-        Uses /api/chat for most models (qwen2.5vl, gemma3, llava, etc.)
-        and /api/generate for moondream which only supports that endpoint.
+        A failure on one image returns a placeholder so the batch continues.
+        A provider that cannot work at all (missing key, unknown name) raises,
+        because every other image would fail the same way.
         """
-        image_bytes = image_path.read_bytes()
-        image_b64 = base64.b64encode(image_bytes).decode("utf-8")
-
-        model_base = self._model.split(":")[0].lower()
-        use_generate = model_base in self._generate_only_models
+        image = ImageInput.from_path(image_path)
+        llm = self._get_llm()
 
         try:
-            with httpx.Client(timeout=settings.ollama_timeout) as client:
-                if use_generate:
-                    raw = self._ollama_generate(client, image_b64, prompt)
-                else:
-                    raw = self._ollama_chat(client, image_b64, prompt)
-                logger.info(f"[Ollama raw] len={len(raw)} lines={len(raw.splitlines())} | {raw[:300]}...END={raw[-200:]}")
-                return self._parse_response(raw)
-        except httpx.TimeoutException:
-            logger.warning(f"Ollama timeout after {settings.ollama_timeout}s")
+            raw = llm.generate(prompt, images=[image], max_tokens=settings.caption_max_tokens or None)
+            logger.info(f"[{llm.name} raw] len={len(raw)} lines={len(raw.splitlines())} | {raw[:300]}...END={raw[-200:]}")
+            return self._parse_response(raw)
+        except LLMNotConfigured:
+            raise
+        except LLMTimeout as e:
+            logger.warning(f"Vision LLM timeout: {e}")
             return dict(self._default_info)
         except Exception as e:
-            logger.warning(f"Ollama error: {e}")
+            logger.warning(f"Vision LLM error: {e}")
             return {**self._default_info, "caption": f"An image. (Caption unavailable: {e})", "_error": True}
-
-    def _ollama_generate(self, client: httpx.Client, image_b64: str, prompt: str) -> str:
-        """Call /api/generate (moondream and similar models)."""
-        payload = {
-            "model": self._model,
-            "prompt": prompt,
-            "images": [image_b64],
-            "stream": False,
-        }
-        resp = client.post(f"{settings.ollama_base_url}/api/generate", json=payload)
-        resp.raise_for_status()
-        return resp.json().get("response", "").strip()
-
-    def _ollama_chat(self, client: httpx.Client, image_b64: str, prompt: str) -> str:
-        """Call /api/chat (qwen2.5vl, gemma3, llava, etc.)."""
-        payload = {
-            "model": self._model,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": prompt,
-                    "images": [image_b64],
-                }
-            ],
-            "stream": False,
-        }
-        resp = client.post(f"{settings.ollama_base_url}/api/chat", json=payload)
-        resp.raise_for_status()
-        return resp.json().get("message", {}).get("content", "").strip()
 
     @staticmethod
     def _parse_response(raw: str) -> dict:

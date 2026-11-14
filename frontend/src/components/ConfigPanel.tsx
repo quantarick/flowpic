@@ -1,9 +1,24 @@
 import { useEffect, useState } from "react";
 import { useI18n } from "../i18n";
-import { fetchOllamaModels } from "../api/client";
-import type { AspectRatio, FitStrategy, FrameStyle, OllamaModel, ProjectConfig, Quality } from "../types";
+import { fetchLlmModels, fetchVideoStyles } from "../api/client";
+import type {
+  AspectRatio,
+  FitStrategy,
+  FrameStyle,
+  LlmModel,
+  LlmModelsResponse,
+  ProjectConfig,
+  Quality,
+  VideoStyleInfo,
+} from "../types";
 
-type ConfigField = "aspect_ratio" | "quality" | "vision_model" | "fps" | "fit_strategy";
+type ConfigField =
+  | "aspect_ratio"
+  | "quality"
+  | "vision_model"
+  | "fps"
+  | "fit_strategy"
+  | "video_style";
 
 interface Props {
   config: ProjectConfig;
@@ -12,20 +27,29 @@ interface Props {
   fields?: ConfigField[];
 }
 
+interface ModelOption {
+  provider: string;
+  configured: boolean;
+  model: LlmModel;
+}
+
+// Ollama treats an untagged name as ":latest", so compare names that way.
+const withTag = (name: string) => (name.includes(":") ? name : `${name}:latest`);
+const sameModel = (a: string, b: string) => withTag(a) === withTag(b);
+
 export function ConfigPanel({ config, onChange, disabled, fields }: Props) {
-  const { t } = useI18n();
-  const [models, setModels] = useState<OllamaModel[]>([]);
-  const [defaultModel, setDefaultModel] = useState<string>("moondream");
+  const { t, lang } = useI18n();
+  const [catalog, setCatalog] = useState<LlmModelsResponse | null>(null);
+  const [styles, setStyles] = useState<VideoStyleInfo[]>([]);
 
   useEffect(() => {
-    fetchOllamaModels()
-      .then((res) => {
-        setModels(res.models);
-        setDefaultModel(res.default);
-      })
-      .catch(() => {
-        setModels([{ name: "moondream", size: null, parameter_size: null }]);
-      });
+    fetchLlmModels()
+      .then(setCatalog)
+      .catch(() => setCatalog(null));
+    // The list comes from the server's style plugins, so a new style shows up with no change here.
+    fetchVideoStyles()
+      .then((res) => setStyles(res.styles))
+      .catch(() => setStyles([]));
   }, []);
 
   const show = (f: ConfigField) => !fields || fields.includes(f);
@@ -34,6 +58,8 @@ export function ConfigPanel({ config, onChange, disabled, fields }: Props) {
     { value: "16:9", label: t.arLandscape },
     { value: "21:9", label: t.arUltrawide },
     { value: "9:16", label: t.arPortrait },
+    { value: "9:19.5", label: t.arPhone },
+    { value: "3:4", label: t.arPortraitPhoto },
     { value: "1:1", label: t.arSquare },
     { value: "4:3", label: t.arClassic },
   ];
@@ -52,7 +78,27 @@ export function ConfigPanel({ config, onChange, disabled, fields }: Props) {
     return ` (${(bytes / 1e6).toFixed(0)}MB)`;
   };
 
-  const selectedModel = config.vision_model ?? defaultModel;
+  // One flat list of choices across providers; the select's value is an index into it.
+  const options: ModelOption[] = (catalog?.providers ?? []).flatMap((p) =>
+    p.models.map((model) => ({ provider: p.name, configured: p.configured, model }))
+  );
+  const serverDefault = catalog?.default ?? null;
+  const isDefault = (o: ModelOption) =>
+    serverDefault !== null &&
+    o.provider === serverDefault.provider &&
+    sameModel(o.model.name, serverDefault.model);
+
+  // A project saved before providers existed has a model and no provider: that model is Ollama's.
+  const selectedProvider = config.vision_model
+    ? config.vision_provider ?? "ollama"
+    : serverDefault?.provider ?? null;
+  const selectedModel = config.vision_model ?? serverDefault?.model ?? null;
+  const selectedIndex = options.findIndex(
+    (o) =>
+      o.provider === selectedProvider &&
+      selectedModel !== null &&
+      sameModel(o.model.name, selectedModel)
+  );
 
   return (
     <div
@@ -105,19 +151,66 @@ export function ConfigPanel({ config, onChange, disabled, fields }: Props) {
         <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
           {t.cfgVisionModel}
           <select
-            value={selectedModel}
+            value={selectedIndex >= 0 ? String(selectedIndex) : ""}
             onChange={(e) => {
-              const val = e.target.value;
-              onChange({ vision_model: val === defaultModel ? null : val });
+              const picked = options[Number(e.target.value)];
+              if (!picked) return;
+              onChange(
+                isDefault(picked)
+                  ? { vision_provider: null, vision_model: null }
+                  : { vision_provider: picked.provider, vision_model: picked.model.name }
+              );
             }}
             disabled={disabled}
             style={selectStyle}
           >
-            {models.map((m) => (
-              <option key={m.name} value={m.name}>
-                {m.name}
-                {m.parameter_size ? ` (${m.parameter_size})` : formatSize(m.size)}
-                {m.name === defaultModel ? " *" : ""}
+            {selectedIndex < 0 && (
+              <option value="">
+                {selectedModel
+                  ? `${selectedProvider ? `${selectedProvider} / ` : ""}${selectedModel}`
+                  : "-"}
+              </option>
+            )}
+            {(catalog?.providers ?? []).map((p) => (
+              <optgroup
+                key={p.name}
+                label={p.configured ? p.name : `${p.name} (${t.cfgNoApiKey})`}
+              >
+                {options.map((o, i) =>
+                  o.provider !== p.name ? null : (
+                    <option key={`${o.provider}/${o.model.name}`} value={String(i)}>
+                      {o.model.name}
+                      {o.model.parameter_size
+                        ? ` (${o.model.parameter_size})`
+                        : formatSize(o.model.size)}
+                      {isDefault(o) ? " *" : ""}
+                    </option>
+                  )
+                )}
+              </optgroup>
+            ))}
+          </select>
+        </label>
+      )}
+
+      {show("video_style") && (
+        <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {t.cfgVideoStyle}
+          <select
+            value={config.video_style}
+            onChange={(e) => onChange({ video_style: e.target.value })}
+            disabled={disabled}
+            style={selectStyle}
+            title={
+              styles.find((s) => s.name === config.video_style)?.description[lang] ?? undefined
+            }
+          >
+            {!styles.some((s) => s.name === config.video_style) && (
+              <option value={config.video_style}>{config.video_style}</option>
+            )}
+            {styles.map((s) => (
+              <option key={s.name} value={s.name} title={s.description[lang] ?? s.description.en}>
+                {s.label[lang] ?? s.label.en ?? s.name}
               </option>
             ))}
           </select>

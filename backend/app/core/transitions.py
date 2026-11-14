@@ -42,8 +42,10 @@ def _gpu_blur_blend(
     frame1: np.ndarray, frame2: np.ndarray, alpha: float, blur_k: int
 ) -> np.ndarray:
     """GPU-accelerated blur + blend of two frames."""
-    t1 = torch.from_numpy(frame1).float().permute(2, 0, 1).unsqueeze(0).to(_device)
-    t2 = torch.from_numpy(frame2).float().permute(2, 0, 1).unsqueeze(0).to(_device)
+    # Upload the frames as bytes and convert to float on the GPU: a quarter of
+    # the data crosses over compared with converting first.
+    t1 = torch.from_numpy(np.ascontiguousarray(frame1)).to(_device).permute(2, 0, 1).unsqueeze(0).float()
+    t2 = torch.from_numpy(np.ascontiguousarray(frame2)).to(_device).permute(2, 0, 1).unsqueeze(0).float()
 
     if blur_k >= 3:
         pad = blur_k // 2
@@ -51,7 +53,7 @@ def _gpu_blur_blend(
         t2 = F.avg_pool2d(F.pad(t2, [pad] * 4, mode="reflect"), blur_k, stride=1)
 
     blended = ((1.0 - alpha) * t1 + alpha * t2).clamp(0, 255)
-    return blended[0].permute(1, 2, 0).byte().cpu().numpy()
+    return blended[0].permute(1, 2, 0).byte().contiguous().cpu().numpy()
 
 
 def _cpu_blur_blend(

@@ -1,4 +1,4 @@
-"""Scrape user's XHS posts and analyze writing style via Claude."""
+"""Scrape user's XHS posts and analyze writing style via the copywriting LLM."""
 
 from __future__ import annotations
 
@@ -9,9 +9,8 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-import anthropic
-
 from app.config import settings
+from app.llm import Role, get_llm, parse_json_object
 from app.models import ScrapedPost, XhsStyleProfile
 
 logger = logging.getLogger(__name__)
@@ -204,9 +203,9 @@ async def _scrape_posts(cookie_str: str, pw_cookies: list[dict] | None) -> list[
 
 
 def _analyze_style(posts: list[ScrapedPost]) -> XhsStyleProfile:
-    """Send scraped posts to Claude for style analysis."""
-    if not settings.anthropic_api_key:
-        raise ValueError("FLOWPIC_ANTHROPIC_API_KEY not configured")
+    """Send scraped posts to the copywriting LLM for style analysis."""
+    llm = get_llm(Role.COPYWRITING)
+    llm.ensure_configured()
 
     posts_text = ""
     for i, post in enumerate(posts, 1):
@@ -231,33 +230,14 @@ def _analyze_style(posts: list[ScrapedPost]) -> XhsStyleProfile:
 }\
 """
 
-    client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
-    logger.info("Analyzing style with Claude (%d posts)", len(posts))
+    logger.info("Analyzing style with %s (%d posts, model=%s)", llm.name, len(posts), llm.model)
 
-    response = client.messages.create(
-        model=settings.copywriting_model,
-        max_tokens=2048,
-        system=system_prompt,
-        messages=[{"role": "user", "content": posts_text}],
-    )
-
-    text = response.content[0].text.strip()
+    text = llm.generate(posts_text, system=system_prompt, max_tokens=2048)
     logger.info("Style analysis raw response: %s", text[:300])
 
-    # Parse JSON
-    import re
-    fence_match = re.search(r"```(?:json)?\s*\n(.*?)\n\s*```", text, re.DOTALL)
-    cleaned = fence_match.group(1).strip() if fence_match else text.strip()
-
-    try:
-        data = json.loads(cleaned)
-    except json.JSONDecodeError:
-        # Try extracting {...}
-        m = re.search(r"\{.*\}", text, re.DOTALL)
-        if m:
-            data = json.loads(m.group())
-        else:
-            raise ValueError(f"Claude returned non-JSON response: {text[:300]}")
+    data = parse_json_object(text)
+    if data is None:
+        raise ValueError(f"{llm.name} returned non-JSON response: {text[:300]}")
 
     return XhsStyleProfile(
         tone=data.get("tone", ""),
@@ -332,7 +312,7 @@ def scrape_user_style(force: bool = False) -> XhsStyleProfile:
             error="No posts found on profile. Make sure you have published posts.",
         )
 
-    # Analyze with Claude
+    # Analyze with the copywriting LLM
     profile = _analyze_style(posts)
 
     # Cache to disk

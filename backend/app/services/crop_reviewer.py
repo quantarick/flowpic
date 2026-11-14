@@ -1,4 +1,4 @@
-"""Post-crop AI review for person images via Ollama vision model.
+"""Post-crop AI review for person images via the vision LLM.
 
 After smart_crop produces a cropped canvas, this service sends it to the
 vision model to check whether the person is fully visible. If not, it
@@ -6,16 +6,14 @@ adjusts the ImageCaption fields (switch to blur-fill, expand box, shift
 focus) and re-crops once. Debug images are saved to the output folder.
 """
 
-import base64
 import logging
 from pathlib import Path
 from typing import Callable
 
 import cv2
-import httpx
 import numpy as np
 
-from app.config import settings
+from app.llm import ImageInput, LLMNotConfigured, LLMProvider, Role, get_llm
 from app.models import ImageCaption, MatchResult
 from app.services.smart_crop import get_output_resolution, smart_fit, AspectRatio, Quality
 
@@ -28,10 +26,6 @@ REVIEW_PROMPT = (
     "COMPLETE: YES or NO\n"
     "CUT_OFF: none, top, bottom, left, right (which edge cuts the person, if any)"
 )
-
-# Models that only support /api/generate (not /api/chat)
-_generate_only_models = {"moondream"}
-
 
 def _crop_image(
     img: np.ndarray,
@@ -59,8 +53,25 @@ def _crop_image(
 
 
 class CropReviewer:
-    def __init__(self, model: str | None = None):
-        self._model = model or settings.ollama_model
+    def __init__(
+        self,
+        model: str | None = None,
+        provider: str | None = None,
+        llm: LLMProvider | None = None,
+    ):
+        """`model` and `provider` are per-project overrides of the vision LLM."""
+        self._model_override = model
+        self._provider_override = provider
+        self._llm = llm
+
+    def _get_llm(self) -> LLMProvider:
+        if self._llm is None:
+            self._llm = get_llm(
+                Role.VISION,
+                provider=self._provider_override,
+                model=self._model_override,
+            )
+        return self._llm
 
     def review_crops(
         self,
@@ -120,8 +131,7 @@ class CropReviewer:
             cv2.imwrite(str(debug_dir / f"{stem}_before.jpg"), canvas_before)
 
             # Ask vision model
-            canvas_b64 = self._encode_canvas(canvas_before)
-            feedback = self._ask_vision(canvas_b64)
+            feedback = self._ask_vision(self._encode_canvas(canvas_before))
             logger.info(
                 f"Crop review [{filename}]: complete={feedback['complete']}, "
                 f"cut_off={feedback['cut_off']}, fit_mode={caption.fit_mode}"
@@ -147,51 +157,25 @@ class CropReviewer:
         return image_captions
 
     @staticmethod
-    def _encode_canvas(canvas: np.ndarray) -> str:
-        """Encode numpy canvas to base64 JPEG string."""
+    def _encode_canvas(canvas: np.ndarray) -> ImageInput:
+        """Encode numpy canvas as a JPEG for the vision LLM."""
         _, buf = cv2.imencode(".jpg", canvas, [cv2.IMWRITE_JPEG_QUALITY, 85])
-        return base64.b64encode(buf.tobytes()).decode("utf-8")
+        return ImageInput(data=buf.tobytes(), mime_type="image/jpeg")
 
-    def _ask_vision(self, image_b64: str) -> dict:
-        """Call Ollama vision model with review prompt, return parsed feedback."""
+    def _ask_vision(self, image: ImageInput) -> dict:
+        """Send the crop to the vision LLM with the review prompt, return parsed feedback.
+
+        A failed call counts as "crop is fine". A provider that cannot work at
+        all raises, because every other crop would fail the same way.
+        """
+        llm = self._get_llm()
         try:
-            with httpx.Client(timeout=settings.ollama_timeout) as client:
-                model_base = self._model.split(":")[0].lower()
-                if model_base in _generate_only_models:
-                    raw = self._ollama_generate(client, image_b64)
-                else:
-                    raw = self._ollama_chat(client, image_b64)
-                return self._parse_review(raw)
+            return self._parse_review(llm.generate(REVIEW_PROMPT, images=[image]))
+        except LLMNotConfigured:
+            raise
         except Exception as e:
             logger.warning(f"Crop review vision call failed: {e}")
             return {"complete": True, "cut_off": "none"}
-
-    def _ollama_generate(self, client: httpx.Client, image_b64: str) -> str:
-        payload = {
-            "model": self._model,
-            "prompt": REVIEW_PROMPT,
-            "images": [image_b64],
-            "stream": False,
-        }
-        resp = client.post(f"{settings.ollama_base_url}/api/generate", json=payload)
-        resp.raise_for_status()
-        return resp.json().get("response", "").strip()
-
-    def _ollama_chat(self, client: httpx.Client, image_b64: str) -> str:
-        payload = {
-            "model": self._model,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": REVIEW_PROMPT,
-                    "images": [image_b64],
-                }
-            ],
-            "stream": False,
-        }
-        resp = client.post(f"{settings.ollama_base_url}/api/chat", json=payload)
-        resp.raise_for_status()
-        return resp.json().get("message", {}).get("content", "").strip()
 
     @staticmethod
     def _parse_review(raw: str) -> dict:

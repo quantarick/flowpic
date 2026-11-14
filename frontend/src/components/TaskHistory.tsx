@@ -439,7 +439,8 @@ export function TaskHistory({ activeTaskId, onSelect, onRetry, pipelineStages, t
                     })}
                     {tk.config?.vision_model && (
                       <div style={{ fontSize: 11, color: "#666", marginTop: 4 }}>
-                        Model: {tk.config.vision_model}
+                        Model: {tk.config.vision_provider ? `${tk.config.vision_provider} / ` : ""}
+                        {tk.config.vision_model}
                       </div>
                     )}
                   </div>

@@ -238,7 +238,10 @@ class KenBurnsEngine:
                 mode="bilinear", padding_mode="zeros", align_corners=True,
             )
 
-        return (out[0].permute(1, 2, 0).clamp(0, 1) * 255).byte().cpu().numpy()
+        # .contiguous() reorders channels on the GPU. Without it the array that
+        # reaches the CPU is a strided view, and every later step (OpenCV,
+        # tobytes() into the FFmpeg pipe) has to untangle it pixel by pixel.
+        return (out[0].permute(1, 2, 0).clamp(0, 1) * 255).byte().contiguous().cpu().numpy()
 
     def render_frame(
         self,

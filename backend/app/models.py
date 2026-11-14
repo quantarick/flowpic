@@ -14,6 +14,8 @@ class AspectRatio(str, Enum):
     RATIO_16_9 = "16:9"
     RATIO_21_9 = "21:9"
     RATIO_9_16 = "9:16"
+    RATIO_9_19_5 = "9:19.5"  # fills an iPhone screen edge to edge
+    RATIO_3_4 = "3:4"        # a vertical phone photo, uncropped
     RATIO_1_1 = "1:1"
     RATIO_4_3 = "4:3"
 
@@ -58,10 +60,16 @@ class ProjectConfig(BaseModel):
     aspect_ratio: AspectRatio = AspectRatio.RATIO_16_9
     quality: Quality = Quality.SD
     fps: int = Field(default=30, ge=15, le=60)
-    vision_model: Optional[str] = None  # Ollama model override; None = use server default
+    # Vision LLM overrides; None = use the server default. A model saved
+    # without a provider is an Ollama model (projects from before providers).
+    vision_provider: Optional[str] = None
+    vision_model: Optional[str] = None
     skip_crop_review: bool = True
     fit_strategy: FitStrategy = FitStrategy.CROP
     frame_style: FrameStyle = FrameStyle.FILM
+    # Name of a style plugin in app/styles. A string, not an enum, so a new
+    # style needs no change here.
+    video_style: str = "natural"
 
 
 class ProjectCreateResponse(BaseModel):

@@ -1,12 +1,8 @@
-"""Per-segment lyric emotion analysis via Ollama text model (Qwen2.5)."""
+"""Per-segment lyric emotion analysis via the text LLM."""
 
-import json
 import logging
-from pathlib import Path
 
-import httpx
-
-from app.config import settings
+from app.llm import LLMNotConfigured, LLMProvider, Role, get_llm, parse_json_object
 from app.models import (
     AudioFeatures,
     LyricEmotion,
@@ -32,6 +28,14 @@ Respond in JSON format only:
 
 
 class LyricEmotionAnalyzer:
+    def __init__(self, llm: LLMProvider | None = None):
+        self._llm = llm
+
+    def _get_llm(self) -> LLMProvider:
+        if self._llm is None:
+            self._llm = get_llm(Role.TEXT)
+        return self._llm
+
     def analyze(
         self,
         lyrics_result: LyricsResult,
@@ -78,48 +82,33 @@ class LyricEmotionAnalyzer:
         return segment_lyrics
 
     def _analyze_segment(self, seg_lyric: SegmentLyrics) -> LyricEmotion | None:
-        """Call Ollama text model for a single segment's lyrics."""
-        prompt = LYRIC_EMOTION_PROMPT.format(lyrics=seg_lyric.text)
+        """Ask the text LLM about a single segment's lyrics.
 
-        payload = {
-            "model": settings.ollama_model,
-            "prompt": prompt,
-            "stream": False,
-        }
+        A failed call skips the segment. A provider that cannot work at all
+        raises, so the caller stops instead of failing every segment in turn.
+        """
+        prompt = LYRIC_EMOTION_PROMPT.format(lyrics=seg_lyric.text)
+        llm = self._get_llm()
 
         try:
-            with httpx.Client(timeout=settings.ollama_timeout) as client:
-                resp = client.post(
-                    f"{settings.ollama_base_url}/api/generate",
-                    json=payload,
-                )
-                resp.raise_for_status()
-                raw = resp.json().get("response", "")
+            raw = llm.generate(prompt)
+        except LLMNotConfigured:
+            raise
         except Exception as e:
-            logger.warning(f"Ollama lyric analysis failed for segment {seg_lyric.segment_index}: {e}")
+            logger.warning(f"Lyric analysis failed for segment {seg_lyric.segment_index}: {e}")
             return None
 
         return self._parse_response(raw, seg_lyric.segment_index)
 
     def _parse_response(self, raw: str, segment_index: int) -> LyricEmotion | None:
-        """Parse JSON response from Ollama."""
-        # Try to extract JSON from the response
-        try:
-            # Handle potential markdown code blocks
-            text = raw.strip()
-            if "```" in text:
-                text = text.split("```")[1]
-                if text.startswith("json"):
-                    text = text[4:]
-                text = text.strip()
-
-            data = json.loads(text)
-            return LyricEmotion(
-                segment_index=segment_index,
-                theme=data.get("theme", ""),
-                mood_keywords=data.get("mood_keywords", []),
-                mood_description=data.get("mood_description", ""),
-            )
-        except (json.JSONDecodeError, KeyError, IndexError) as e:
-            logger.warning(f"Failed to parse lyric emotion JSON for segment {segment_index}: {e}")
+        """Parse the JSON reply from the text LLM."""
+        data = parse_json_object(raw)
+        if data is None:
+            logger.warning(f"Failed to parse lyric emotion JSON for segment {segment_index}")
             return None
+        return LyricEmotion(
+            segment_index=segment_index,
+            theme=data.get("theme", ""),
+            mood_keywords=data.get("mood_keywords", []),
+            mood_description=data.get("mood_description", ""),
+        )
