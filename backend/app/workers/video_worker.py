@@ -68,6 +68,85 @@ def _save_single_cache(proj_dir: Path, key: str, data) -> None:
     path.write_text(data.model_dump_json(), encoding="utf-8")
 
 
+def _load_cached_matches(proj_dir: Path, image_captions: list[ImageCaption]):
+    """Cached (matches, location groups, merged emotions), or None if they do not fit this run.
+
+    Matching depends on which photos were on offer. A run that leaves photos
+    out (or brings them back) must not reuse a match made from a different set.
+    """
+    matches = _load_cache(proj_dir, "matches", MatchResult)
+    location_groups = _load_cache(proj_dir, "location_groups", LocationGroup)
+    merged_emotions = _load_cache(proj_dir, "merged_emotions", SegmentEmotion)
+    if not matches or location_groups is None or not merged_emotions:
+        return None
+
+    on_offer = sorted(ic.filename for ic in image_captions)
+    recorded = None
+    inputs_path = _cache_path(proj_dir, "match_inputs")
+    if inputs_path.exists():
+        try:
+            recorded = json.loads(inputs_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            recorded = None
+    if recorded is not None:
+        if recorded != on_offer:
+            logger.info("Cached matches were made from a different set of photos; matching again")
+            return None
+    elif not {m.image_filename for m in matches} <= set(on_offer):
+        # A cache from before the photo list was recorded: usable only if it
+        # shows nothing that this run leaves out.
+        logger.info("Cached matches use photos that this run leaves out; matching again")
+        return None
+    return matches, location_groups, merged_emotions
+
+
+def _save_matches(proj_dir: Path, image_captions, matches, location_groups, merged_emotions) -> None:
+    _save_cache(proj_dir, "matches", matches)
+    _save_cache(proj_dir, "location_groups", location_groups)
+    _save_cache(proj_dir, "merged_emotions", merged_emotions)
+    _cache_path(proj_dir, "match_inputs").write_text(
+        json.dumps(sorted(ic.filename for ic in image_captions), ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+
+def _leave_out_people(image_paths: list[Path], report, check_cancel) -> list[Path]:
+    """Drop the photos that have people in them. `report(detail)` shows progress."""
+    from app.services.person_detector import split_by_people
+
+    total = len(image_paths)
+    report(f"0/{total} photos checked")
+
+    def on_progress(done: int, _total: int):
+        report(f"{done}/{total} photos checked")
+        check_cancel()
+
+    kept, with_people = split_by_people(image_paths, progress_callback=on_progress)
+    if len(kept) < 2:
+        raise RuntimeError(
+            f"Only {len(kept)} of {total} photos have no people in them, and a video needs at least 2. "
+            "Turn off 'Exclude photos with people' or add more photos."
+        )
+    report(f"Left out {len(with_people)} photos with people, {len(kept)} remaining")
+    return kept
+
+
+def _as_scenery(caption: ImageCaption) -> ImageCaption:
+    """A copy of a caption with its people fields cleared.
+
+    For a photo the people check has passed: any face the captioner's own
+    detector reported there was a false alarm, and must not steer the crop or
+    switch the photo to blur-fill.
+    """
+    return caption.model_copy(update={
+        "has_person": False,
+        "face_regions": [],
+        "people_centers": None,
+        "fit_mode": "crop",
+        "element_type": None if caption.element_type == "person" else caption.element_type,
+    })
+
+
 def run_pipeline(
     project_id: str,
     task_id_arg: str,
@@ -155,6 +234,16 @@ def run_pipeline(
 
         _save_cache(proj_dir, "segment_emotions", segment_emotions)
 
+    # === Step 2.9: Leave out photos with people (optional) ===
+    # Before captioning, so no caption is paid for on a photo that will not be used.
+    if config.exclude_people:
+        _check_cancel()
+        image_paths = _leave_out_people(
+            image_paths,
+            lambda detail: _progress(TaskStatus.CAPTIONING_IMAGES, 15, "Checking photos for people", detail),
+            _check_cancel,
+        )
+
     # === Step 3: Caption Images (fast-path if all cached) ===
     _check_cancel()
 
@@ -181,6 +270,9 @@ def run_pipeline(
 
         _progress(TaskStatus.CAPTIONING_IMAGES, 30, "Images captioned",
                   f"{len(image_captions)} captions generated")
+
+    if config.exclude_people:
+        image_captions = [_as_scenery(ic) for ic in image_captions]
 
     # === Step 3.5: Deduplicate similar images ===
     image_captions = _deduplicate_images(image_captions, images_dir)
@@ -209,11 +301,9 @@ def run_pipeline(
                       f"Dropped {dropped} uncropable close-ups, {len(image_captions)} remaining")
 
     # === Step 4: Semantic Matching ===
-    matches = _load_cache(proj_dir, "matches", MatchResult)
-    location_groups = _load_cache(proj_dir, "location_groups", LocationGroup)
-    merged_emotions = _load_cache(proj_dir, "merged_emotions", SegmentEmotion)
-    if matches and location_groups is not None and merged_emotions:
-        segment_emotions = merged_emotions
+    cached_matching = _load_cached_matches(proj_dir, image_captions)
+    if cached_matching:
+        matches, location_groups, segment_emotions = cached_matching
         logger.info("Loaded matches and location groups from cache")
         _progress(TaskStatus.MATCHING, 35, "Matching complete (cached)",
                   f"{len(matches)} segment-image pairs")
@@ -249,9 +339,7 @@ def run_pipeline(
         # Persist CLIP embeddings back to per-image caption cache
         _persist_clip_embeddings(proj_dir, image_captions)
 
-        _save_cache(proj_dir, "matches", matches)
-        _save_cache(proj_dir, "location_groups", location_groups)
-        _save_cache(proj_dir, "merged_emotions", segment_emotions)
+        _save_matches(proj_dir, image_captions, matches, location_groups, segment_emotions)
 
     # === Step 4.75: Review person crops ===
     if config.skip_crop_review:
@@ -275,6 +363,7 @@ def run_pipeline(
                 matches, image_captions, images_dir,
                 config.aspect_ratio, config.quality,
                 progress_callback=review_progress,
+                remove_borders=config.remove_borders,
             )
 
     # === Step 5: Render Video ===
@@ -289,6 +378,7 @@ def run_pipeline(
         fit_strategy=config.fit_strategy,
         frame_style=config.frame_style,
         video_style=config.video_style,
+        remove_borders=config.remove_borders,
     )
 
     def render_progress(done: int, total: int):
@@ -566,11 +656,21 @@ def run_crop_preview(
     from app.services.image_captioner import ImageCaptioner
     from app.services.smart_crop import smart_fit, frame_fit, check_face_fits, get_output_resolution
 
+    from app.services.border_trim import remove_frame
+
     captioner = ImageCaptioner(model=config.vision_model, provider=config.vision_provider)
     out_w, out_h = get_output_resolution(config.aspect_ratio, config.quality)
     use_frame = config.fit_strategy == FitStrategy.FRAME
     crops_dir = output_dir / "crops"
     crops_dir.mkdir(parents=True, exist_ok=True)
+
+    # The preview shows what the video will use, so the same photos are left out.
+    if config.exclude_people:
+        image_paths = _leave_out_people(
+            image_paths,
+            lambda detail: _progress(TaskStatus.CAPTIONING_IMAGES, 3, "Checking photos for people", detail),
+            _check_cancel,
+        )
 
     total = len(image_paths)
     caption_queue: Queue = Queue()  # (index, ImageCaption) or None as sentinel
@@ -585,6 +685,8 @@ def run_crop_preview(
         for idx, path in enumerate(image_paths):
             _check_cancel()
             cap = captioner.caption_image(path)
+            if config.exclude_people:
+                cap = _as_scenery(cap)
             caption_queue.put((idx, cap))
             captioned_count[0] = idx + 1
             pct = 5 + (captioned_count[0] / total) * 50
@@ -612,6 +714,8 @@ def run_crop_preview(
             if img is None:
                 cropped_count[0] += 1
                 continue
+            if config.remove_borders:
+                img, cap = remove_frame(img, cap)
 
             stem = Path(cap.filename).stem
 
@@ -928,7 +1032,12 @@ def _compute_location_groups(
 
 
 def _persist_clip_embeddings(proj_dir: Path, image_captions: list[ImageCaption]):
-    """Write CLIP embeddings back to per-image caption cache files."""
+    """Write CLIP embeddings into the per-image caption cache files.
+
+    Only the embedding is written. A caption in memory may have been adjusted
+    for this run alone (its people fields cleared, for one) and that must not
+    end up in the cache.
+    """
     captions_dir = proj_dir / "captions"
     if not captions_dir.exists():
         return
@@ -939,9 +1048,11 @@ def _persist_clip_embeddings(proj_dir: Path, image_captions: list[ImageCaption])
         cache_file = captions_dir / f"{stem}.json"
         if cache_file.exists():
             try:
-                cache_file.write_text(
-                    ic.model_dump_json(), encoding="utf-8"
-                )
+                cached = json.loads(cache_file.read_text(encoding="utf-8"))
+                if cached.get("clip_embedding") == ic.clip_embedding:
+                    continue
+                cached["clip_embedding"] = ic.clip_embedding
+                cache_file.write_text(json.dumps(cached, ensure_ascii=False), encoding="utf-8")
             except Exception as e:
                 logger.warning(f"Failed to persist CLIP embedding for {ic.filename}: {e}")
 

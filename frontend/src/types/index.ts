@@ -28,6 +28,10 @@ export interface ProjectConfig {
   frame_style: FrameStyle;
   // Name of a video style plugin, as listed by GET /api/styles.
   video_style: string;
+  // Cut off a frame that is printed on the photos themselves.
+  remove_borders: boolean;
+  // Leave out photos that have people in them.
+  exclude_people: boolean;
 }
 
 export interface VideoStyleInfo {

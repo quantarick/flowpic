@@ -9,7 +9,12 @@ import torch
 from moviepy import AudioFileClip, VideoClip, concatenate_videoclips
 
 from app.core.ken_burns import KenBurnsEngine
-from app.core.transitions import compute_crossfade_duration, crossfade_clips
+from app.core.transitions import (
+    clip_durations,
+    compute_crossfade_duration,
+    crossfade_clips,
+    fit_crossfade,
+)
 from app.models import (
     AspectRatio,
     AudioFeatures,
@@ -21,6 +26,7 @@ from app.models import (
     Quality,
     SegmentEmotion,
 )
+from app.services.border_trim import remove_frame
 from app.services.smart_crop import get_output_resolution, smart_fit, pan_fit, frame_fit, remap_face_regions
 from app.services.subtitle_renderer import (
     compute_title_font_size,
@@ -82,12 +88,15 @@ class VideoGenerator:
         fit_strategy: FitStrategy = FitStrategy.CROP,
         frame_style: FrameStyle = FrameStyle.FILM,
         video_style: str = DEFAULT_STYLE,
+        remove_borders: bool = False,
     ):
         self.aspect_ratio = aspect_ratio
         self.quality = quality
         self.fps = fps
         self.fit_strategy = fit_strategy
         self.frame_style = frame_style
+        # Cut off a frame that is printed on a photo before fitting it
+        self.remove_borders = remove_borders
         self.style = get_style(video_style)
         self.out_w, self.out_h = get_output_resolution(aspect_ratio, quality)
         # Pictures are fitted and animated inside the picture area. It equals
@@ -120,6 +129,29 @@ class VideoGenerator:
         return cv2.resize(
             np.ascontiguousarray(canvas), (self.pic_w, self.pic_h), interpolation=cv2.INTER_AREA,
         )
+
+    @staticmethod
+    def _plan_timing(
+        segments: list[SegmentEmotion], xfade_wanted: float,
+    ) -> tuple[float, list[float]]:
+        """The crossfade length and each clip's length for the segments being shown.
+
+        A clip is on screen from the start of its own segment to the start of
+        the next one shown, so a segment with no clip does not shift the rest:
+        the clip before it stays up longer. The first clip starts with the music.
+        """
+        if not segments:
+            return 0.0, []
+        starts = [s.start for s in segments]
+        in_order = all(b > a for a, b in zip(starts, starts[1:]))
+        if in_order and segments[-1].end > starts[-1]:
+            edges = [0.0, *starts[1:], segments[-1].end]
+            spans = [b - a for a, b in zip(edges, edges[1:])]
+        else:
+            # Segments out of time order: fall back to each one's own length
+            spans = [s.end - s.start for s in segments]
+        xfade = fit_crossfade(spans, xfade_wanted)
+        return xfade, clip_durations(spans, xfade)
 
     def generate(
         self,
@@ -158,13 +190,20 @@ class VideoGenerator:
         avg_arousal = sum(se.arousal for se in segment_emotions) / max(len(segment_emotions), 1)
         logger.info(f"Global mood: valence={avg_valence:.1f}, arousal={avg_arousal:.1f}")
 
-        xfade_dur = compute_crossfade_duration(audio_features.beat_times)
-
-        n_clips = sum(
-            1 for m in matches if emotion_map.get(m.segment_index) is not None
+        # Work out every clip's length before building any, so that each
+        # picture change is centred on the beat where its segment starts.
+        planned = [
+            (i, emotion_map[m.segment_index])
+            for i, m in enumerate(matches)
+            if m.segment_index in emotion_map
+            and cv2.haveImageReader(str(images_dir / m.image_filename))
+        ]
+        xfade, clip_length = self._plan_timing(
+            [seg for _, seg in planned],
+            compute_crossfade_duration(audio_features.beat_times),
         )
-        total_xfade_loss = max(0, (n_clips - 1)) * xfade_dur
-        per_clip_extra = total_xfade_loss / max(n_clips, 1)
+        clip_duration = {i: d for (i, _), d in zip(planned, clip_length)}
+        logger.info(f"Timing: {len(planned)} clips, crossfade {xfade:.3f}s centred on segment boundaries")
 
         clips: list[VideoClip] = []
         total = len(matches)
@@ -184,19 +223,22 @@ class VideoGenerator:
         )
 
         for i, match in enumerate(matches):
-            seg_emo = emotion_map.get(match.segment_index)
-            if seg_emo is None:
+            if i not in clip_duration:
                 continue
-
-            seg_duration = (seg_emo.end - seg_emo.start) + per_clip_extra
+            seg_emo = emotion_map[match.segment_index]
+            seg_duration = clip_duration[i]
 
             # Load image (keep BGR for smart_fit saliency calculations)
             img_path = images_dir / match.image_filename
             img = cv2.imread(str(img_path))
             if img is None:
-                continue
+                # The file has an image header but will not decode. Leaving the
+                # clip out would move every later picture change off its beat.
+                raise RuntimeError(f"Could not read image: {match.image_filename}")
 
             caption_info = caption_map.get(match.image_filename)
+            if self.remove_borders:
+                img, caption_info = remove_frame(img, caption_info)
             face_regions = caption_info.face_regions if caption_info else []
             focus_x = caption_info.focus_x if caption_info else 0.5
             focus_y = caption_info.focus_y if caption_info else 0.5
@@ -392,8 +434,8 @@ class VideoGenerator:
             raise RuntimeError("No clips generated")
 
         # Apply crossfades between clips
-        if len(clips) > 1 and xfade_dur > 0:
-            final_clip = crossfade_clips(clips, xfade_dur)
+        if len(clips) > 1 and xfade > 0:
+            final_clip = crossfade_clips(clips, xfade)
         else:
             final_clip = concatenate_videoclips(clips)
 

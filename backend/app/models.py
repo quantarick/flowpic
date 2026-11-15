@@ -70,6 +70,11 @@ class ProjectConfig(BaseModel):
     # Name of a style plugin in app/styles. A string, not an enum, so a new
     # style needs no change here.
     video_style: str = "natural"
+    # Cut off a plain frame that is printed on the photos themselves (a white
+    # mat, a watermark border) before they are fitted to the video.
+    remove_borders: bool = False
+    # Leave out photos that have people in them.
+    exclude_people: bool = False
 
 
 class ProjectCreateResponse(BaseModel):

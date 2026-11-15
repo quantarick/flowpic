@@ -48,6 +48,11 @@ The video generation pipeline runs as a background thread and flows through thes
 7. **Location clustering** — Groups GPS-tagged images by place, computes LocationGroups for title cards
 8. **VideoGenerator** (`services/video_generator.py`) — Ken Burns effect (1.3x oversized source, cubic-eased zoom/pan), manual crossfade at beat boundaries, smart crop with face detection, location title cards for groups >3 clips. Applies the project's video style (`app/styles`): a per-picture grade plus per-frame bars, vignette and grain. Assembles via moviepy + ffmpeg.
 
+Two optional steps, each switched on by a `ProjectConfig` flag:
+
+- **People filter** (`exclude_people`, `services/person_detector.py`) — runs before captioning, so no caption is spent on a photo that will be left out. torchvision Faster R-CNN over the whole photo and a grid of tiles; answers cached in `{project}/people/`.
+- **Frame removal** (`remove_borders`, `services/border_trim.py`) — cuts a printed frame off a photo where the photo is loaded for fitting (the renderer, the crop preview, crop review, crop regeneration).
+
 ### Key data flow
 ```
 Music → AudioFeatures → SegmentEmotion[] (mood descriptions)
@@ -94,6 +99,11 @@ File-based per project: `backend/data/{project_id}/` with `meta.json`, `images/`
 - The Anthropic API is not used. Do not add it back
 - A video style is one file in `app/styles` with a `@register` class; the package imports every module at startup and `/api/styles` lists them. `ProjectConfig.video_style` is a plain string so new styles need no model or frontend change
 - Tests in `backend/tests/` are hermetic: `conftest.py` blanks the real key and providers use a mock transport or `FakeLLM`
+- Picture changes are timed by `core/transitions.clip_durations`: a clip runs from half a crossfade before its segment to half a crossfade after, so the middle of every fade is on the segment boundary. Do not go back to adding an equal share of the fade to every clip; that drifts from half a fade late to half a fade early across the song (`tests/test_transition_timing.py`)
+- `remove_frame(img, caption)` returns a cut image and a moved copy of the caption. Use it at the point where a photo is loaded and never store the moved caption: the caption cache stays in whole-photo coordinates
+- Captions adjusted for one run (`_as_scenery` when people are excluded) must not reach the cache either; `_persist_clip_embeddings` writes the embedding only
+- Cached matches are tied to the photos they were made from (`cache/match_inputs.json`). Leaving photos out, or bringing them back, matches again
+- The person detector's limits are measured, not guessed: see the notes at the top of `services/person_detector.py` before changing its threshold or adding a second-look step (both a zoomed second pass and a CLIP check were tried and made it worse)
 
 - GPU models (Music2Emo, Demucs, Whisper) load/unload sequentially to share VRAM
 - Image captions are cached in `{project_dir}/captions/{hash}.json` — skip on regenerate

@@ -18,7 +18,9 @@ type ConfigField =
   | "vision_model"
   | "fps"
   | "fit_strategy"
-  | "video_style";
+  | "video_style"
+  | "remove_borders"
+  | "exclude_people";
 
 interface Props {
   config: ProjectConfig;
@@ -267,9 +269,40 @@ export function ConfigPanel({ config, onChange, disabled, fields }: Props) {
           </select>
         </label>
       )}
+
+      {show("remove_borders") && (
+        <label style={checkStyle} title={t.cfgRemoveBordersHint}>
+          <input
+            type="checkbox"
+            checked={config.remove_borders ?? false}
+            onChange={(e) => onChange({ remove_borders: e.target.checked })}
+            disabled={disabled}
+          />
+          {t.cfgRemoveBorders}
+        </label>
+      )}
+
+      {show("exclude_people") && (
+        <label style={checkStyle} title={t.cfgExcludePeopleHint}>
+          <input
+            type="checkbox"
+            checked={config.exclude_people ?? false}
+            onChange={(e) => onChange({ exclude_people: e.target.checked })}
+            disabled={disabled}
+          />
+          {t.cfgExcludePeople}
+        </label>
+      )}
     </div>
   );
 }
+
+const checkStyle: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 6,
+  cursor: "pointer",
+};
 
 const selectStyle: React.CSSProperties = {
   padding: "6px 10px",

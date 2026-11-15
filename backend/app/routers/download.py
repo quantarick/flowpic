@@ -134,6 +134,9 @@ async def regenerate_crop(project_id: str, req: RegenerateCropRequest):
     img = cv2.imread(str(source_image))  # cv2 imported above
     if img is None:
         raise HTTPException(500, "Failed to read source image")
+    if config.remove_borders:
+        from app.services.border_trim import remove_frame
+        img, caption = remove_frame(img, caption)
 
     subject_box = None
     if caption.subject_x1 is not None:

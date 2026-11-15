@@ -77,6 +77,10 @@ class Settings(BaseSettings):
     # well-formed reply is about 170 to 300; this stops a model that ignores
     # the format and keeps writing. 0 means no cap.
     caption_max_tokens: int = 450
+    # "Exclude photos with people": how sure the detector must be, 0 to 1,
+    # that something is a person. Lower catches more half-hidden figures and
+    # also more look-alikes (branches, birds, buoys).
+    person_score: float = 0.9
 
     # extra="ignore": a FLOWPIC_ variable with no field here (a retired
     # setting left in .env) is skipped. The default would reject it with an

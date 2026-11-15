@@ -198,7 +198,7 @@ export default function App() {
                 config={project.config}
                 onChange={project.updateConfig}
                 disabled={isGenerating}
-                fields={["aspect_ratio", "quality", "vision_model"]}
+                fields={["aspect_ratio", "quality", "vision_model", "remove_borders", "exclude_people"]}
               />
             </section>
 
@@ -271,7 +271,7 @@ export default function App() {
                 config={project.config}
                 onChange={project.updateConfig}
                 disabled={isGenerating}
-                fields={["aspect_ratio", "quality", "video_style", "fps"]}
+                fields={["aspect_ratio", "quality", "video_style", "fps", "remove_borders", "exclude_people"]}
               />
             </section>
 

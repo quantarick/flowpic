@@ -19,6 +19,8 @@ FlowPic analyzes your music and photos separately, then intelligently pairs them
 - Drag-and-drop web UI for images and music
 - Folder import — drop or pick a folder and every JPG, PNG and WebP in it and its sub-folders is added
 - Reset — one button deletes every project and all history, after showing what will go
+- Remove photo borders — cuts off a white or black frame that is printed on the photos themselves
+- Exclude photos with people — leaves out every photo in which a person is found
 - AI-powered image↔music matching (semantic, not just color/brightness)
 - Ken Burns zoom/pan with face-aware centering
 - Beat-synced crossfade transitions
@@ -120,6 +122,7 @@ All settings can be overridden via environment variables with the `FLOWPIC_` pre
 | `FLOWPIC_MAX_WORKERS` | `2` | Concurrent generation tasks |
 | `FLOWPIC_CAPTION_PARALLEL` | `0` | Photos captioned at once. `0` picks for the provider: 1 for a local model, 4 for Gemini |
 | `FLOWPIC_CAPTION_MAX_TOKENS` | `450` | Longest caption reply for a local model, so one that ignores the format cannot run on. `0` removes the cap |
+| `FLOWPIC_PERSON_SCORE` | `0.9` | How sure the person detector must be, 0 to 1, before "Exclude photos with people" leaves a photo out |
 | `FLOWPIC_XHS_HEADLESS` | `true` | Run Playwright browser in headless mode for XHS publish |
 
 ## LLM providers
@@ -172,6 +175,14 @@ class Noir(VideoStyle):
 ```
 
 Restart the backend and the style appears in the dropdown. `grade` runs once per picture. Bars, vignette and grain are applied to every frame, so they stay fixed while the picture moves. Grain makes files larger.
+
+## Photo options
+
+Two switches next to the other settings change which photos are used and how. Both are off by default.
+
+**Remove photo borders.** Some photos come with a frame printed on them: a white mat, a thin outline, a line of camera text. In a video that frame slides around with the picture. With this on, the frame is cut off before the photo is fitted. Only a frame on all four sides in one flat colour is removed; bars on two sides, or a picture that is simply dark or pale at its edges, are left alone.
+
+**Exclude photos with people.** Before captioning, every photo is checked by a person detector (torchvision's Faster R-CNN; its weights, about 170 MB, download on first use) and photos with people are left out. The answers are kept in the project folder, so the check runs once per photo. It finds people who are clearly people, down to about 1% of the picture height. A figure smaller than that cannot be told from a bird or a rock, so it does not count and the photo stays in. `FLOWPIC_PERSON_SCORE` sets how sure the detector must be.
 
 ## Tech Stack
 

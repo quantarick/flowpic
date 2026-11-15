@@ -81,11 +81,20 @@ class CropReviewer:
         aspect_ratio: AspectRatio,
         quality: Quality,
         progress_callback: Callable[[int, int], None] | None = None,
+        remove_borders: bool = False,
     ) -> list[ImageCaption]:
         """Review cropped person images and adjust captions if person is cut off.
 
         Saves debug images (before/after) to {project}/output/crop_debug/.
+        With `remove_borders` the crops are made the way the video makes them,
+        from the photo with its printed frame cut off.
         """
+        def crop(img: np.ndarray, caption: ImageCaption) -> np.ndarray:
+            if remove_borders:
+                from app.services.border_trim import remove_frame
+                img, caption = remove_frame(img, caption)
+            return _crop_image(img, caption, out_w, out_h)
+
         out_w, out_h = get_output_resolution(aspect_ratio, quality)
 
         # Debug output directory
@@ -127,7 +136,7 @@ class CropReviewer:
             cv2.imwrite(str(debug_dir / f"{stem}_original.jpg"), img)
 
             # --- Initial crop ---
-            canvas_before = _crop_image(img, caption, out_w, out_h)
+            canvas_before = crop(img, caption)
             cv2.imwrite(str(debug_dir / f"{stem}_before.jpg"), canvas_before)
 
             # Ask vision model
@@ -142,7 +151,7 @@ class CropReviewer:
                 caption = self._adjust_caption(caption, feedback["cut_off"])
                 image_captions[idx] = caption
 
-                canvas_after = _crop_image(img, caption, out_w, out_h)
+                canvas_after = crop(img, caption)
                 cv2.imwrite(str(debug_dir / f"{stem}_after.jpg"), canvas_after)
                 logger.info(
                     f"Crop review [{filename}]: adjusted for {feedback['cut_off']} "

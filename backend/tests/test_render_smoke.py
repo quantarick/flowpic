@@ -129,6 +129,95 @@ def test_unknown_style_fails_before_any_rendering():
         VideoGenerator(aspect_ratio=AspectRatio.RATIO_16_9, quality=Quality.SD, video_style="noir")
 
 
+def flat_inputs(tmp_path, pictures: list[np.ndarray], seconds: float = 1.0) -> dict:
+    """Render inputs for the given pictures, one per segment of `seconds`, with a beat every half second."""
+    images = tmp_path / "images"
+    images.mkdir()
+    names = []
+    for i, img in enumerate(pictures):
+        name = f"picture{i}.png"
+        cv2.imwrite(str(images / name), img)
+        names.append(name)
+
+    total = seconds * len(names)
+    audio = tmp_path / "music.wav"
+    with wave.open(str(audio), "wb") as f:
+        f.setnchannels(1)
+        f.setsampwidth(2)
+        f.setframerate(22050)
+        t = np.arange(int(22050 * total)) / 22050
+        f.writeframes((np.sin(2 * np.pi * 220 * t) * 6000).astype(np.int16).tobytes())
+
+    segments = [
+        AudioSegment(start=seconds * i, end=seconds * (i + 1), beat_count=2,
+                     rms_energy=0.2, spectral_centroid=1500.0, chroma=[0.0] * 12)
+        for i in range(len(names))
+    ]
+    return {
+        "matches": [MatchResult(segment_index=i, image_filename=n, similarity_score=0.5) for i, n in enumerate(names)],
+        "segment_emotions": [
+            SegmentEmotion(segment_index=i, start=s.start, end=s.end, valence=6.0, arousal=4.0, mood_description="calm")
+            for i, s in enumerate(segments)
+        ],
+        "image_captions": [ImageCaption(filename=n, caption="A picture.") for n in names],
+        "audio_features": AudioFeatures(
+            beat_times=[0.5 * i for i in range(int(total * 2))], onset_times=[],
+            tempo=120.0, duration=total, segments=segments,
+        ),
+        "images_dir": images,
+        "audio_path": audio,
+    }
+
+
+def test_picture_changes_land_on_the_segment_boundaries(tmp_path):
+    """Each crossfade is half-way through exactly where the next segment starts."""
+    from app.services.video_generator import VideoGenerator
+
+    fps = 30
+    levels = [40, 100, 160, 220]                     # four flat grey pictures
+    inputs = flat_inputs(tmp_path, [np.full((720, 1280, 3), v, np.uint8) for v in levels])
+    output = tmp_path / "out" / "timing.mp4"
+    VideoGenerator(aspect_ratio=AspectRatio.RATIO_16_9, quality=Quality.SD, fps=fps).generate(
+        output_path=output, **inputs
+    )
+
+    brightness = np.array([frame.mean() for frame in read_frames(output)])
+    assert abs(len(brightness) - 4 * fps) <= 1       # the video is as long as the music
+
+    plateau = [brightness[int((i + 0.5) * fps)] for i in range(4)]
+    for i in (1, 2, 3):
+        half_way = (plateau[i - 1] + plateau[i]) / 2
+        after = int(np.argmax(brightness >= half_way))                 # first frame past the middle of the fade
+        a, b = brightness[after - 1], brightness[after]
+        crossing = (after - 1 + (half_way - a) / (b - a)) / fps        # seconds
+        assert crossing == pytest.approx(float(i), abs=1.0 / fps), f"change {i} is at {crossing:.3f}s"
+
+
+def test_remove_borders_takes_a_printed_frame_out_of_the_video(tmp_path):
+    from app.services.video_generator import VideoGenerator
+
+    rng = np.random.default_rng(0)
+    pictures = []
+    for i in range(2):
+        y, x = np.mgrid[0:640, 0:1200]
+        scene = np.stack([60 + 100 * x / 1200, 90 + 80 * y / 640, 140 - 70 * x / 1200], axis=2)
+        scene = np.clip(scene + rng.normal(0, 10, scene.shape), 20, 200).astype(np.uint8)
+        framed = np.full((720, 1280, 3), 255, np.uint8)             # a 40 px white mat all round
+        framed[40:680, 40:1240] = scene
+        pictures.append(framed)
+    inputs = flat_inputs(tmp_path, pictures)
+
+    def white_share(remove_borders: bool) -> float:
+        output = tmp_path / "out" / f"borders_{remove_borders}.mp4"
+        VideoGenerator(
+            aspect_ratio=AspectRatio.RATIO_16_9, quality=Quality.SD, fps=FPS, remove_borders=remove_borders,
+        ).generate(output_path=output, **inputs)
+        return max(float((frame.min(axis=2) > 235).mean()) for frame in read_frames(output))
+
+    assert white_share(False) > 0.02        # as before: the mat is in the picture
+    assert white_share(True) < 0.001        # with the option: none of it is
+
+
 def top_level_atoms(path) -> list[str]:
     """Names of the top-level boxes of an MP4 file, in file order."""
     atoms = []

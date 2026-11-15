@@ -25,6 +25,42 @@ def compute_crossfade_duration(beat_times: list[float]) -> float:
     return max(0.3, min(1.2, float(np.median(intervals)) * 0.5))
 
 
+def fit_crossfade(segment_durations: list[float], xfade_duration: float) -> float:
+    """The crossfade to use: the one asked for, unless the shortest segment has no room for it."""
+    if len(segment_durations) < 2:
+        return 0.0
+    return max(0.0, min(xfade_duration, min(segment_durations) * 0.4))
+
+
+def clip_durations(segment_durations: list[float], xfade: float) -> list[float]:
+    """How long each clip runs so that every picture change lands on its beat.
+
+    Clips overlap by `xfade` while one fades into the next. For the middle of
+    each fade to sit on the boundary between two segments, a clip has to start
+    half a fade before its segment and end half a fade after it. The first clip
+    starts with the music and the last ends with it, so those two are half a
+    fade shorter. The video comes out exactly as long as the segments together.
+
+    (Giving every clip the same extra time also makes the lengths add up, but
+    then the first change comes half a fade late and the last half a fade
+    early, with the error sliding from one to the other through the song.)
+    """
+    if len(segment_durations) < 2 or xfade <= 0:
+        return list(segment_durations)
+    durations = [d + xfade for d in segment_durations]
+    durations[0] -= xfade / 2
+    durations[-1] -= xfade / 2
+    return durations
+
+
+def clip_starts(durations: list[float], xfade: float) -> list[float]:
+    """When each clip starts on the video's clock, given that clips overlap by `xfade`."""
+    starts = [0.0]
+    for d in durations[:-1]:
+        starts.append(starts[-1] + d - xfade)
+    return starts
+
+
 def snap_to_beat(time: float, beat_times: list[float]) -> float:
     if not beat_times:
         return time
@@ -77,11 +113,11 @@ def crossfade_clips(clips: list[VideoClip], xfade_duration: float) -> VideoClip:
             lambda t: np.zeros((1, 1, 3), dtype=np.uint8), duration=0
         )
 
+    # A caller that sized its clips with clip_durations() passes a crossfade
+    # that already fits, so this limit changes nothing for it.
     xfade = min(xfade_duration, min(c.duration for c in clips) * 0.4)
 
-    starts = [0.0]
-    for i in range(len(clips) - 1):
-        starts.append(starts[-1] + clips[i].duration - xfade)
+    starts = clip_starts([c.duration for c in clips], xfade)
     total_duration = starts[-1] + clips[-1].duration
 
     def make_frame(t):

@@ -49,6 +49,8 @@ const defaultConfig: ProjectConfig = {
   fit_strategy: "crop",
   frame_style: "film",
   video_style: "natural",
+  remove_borders: false,
+  exclude_people: false,
 };
 
 export function useProject() {
